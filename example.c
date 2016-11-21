@@ -15,9 +15,10 @@ int main(int argc, const char *argv[])
 	printf("version: '%u'\n", pdf.version);
 	for (size_t i = 0; i < pdf.xref_tbl_sz; ++i) {
 		struct pdf_xref *entry = pdf.xref_tbl+i;
-		printf("object %u.%u@%lu %s\n", entry->obj_num, entry->generation,
+		printf("object %u.%u@%lu %s\n", entry->id.num, entry->id.gen,
 		       entry->offset, entry->in_use ? "in use" : "free");
 	}
+	printf("root: %u.%u\n", pdf.root.num, pdf.root.gen);
 	ret = 0;
 
 out:
