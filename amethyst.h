@@ -51,6 +51,7 @@ struct pdf_xref
 };
 
 AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname);
+AMFDEF int pdf_free(struct pdf *pdf);
 
 #ifdef __cplusplus
 }
@@ -119,7 +120,6 @@ AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname)
 		goto close;
 	}
 	pdf->version = version;
-	PDF_LOG("PDF version: '%u'\n", pdf->version);
 
 	if (fseek(fp, -6, SEEK_END)) {
 		PDF_LOG("failed to lookup EOF comment\n");
@@ -208,6 +208,11 @@ AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname)
 close:
 	fclose(fp);
 	return ret;
+}
+
+AMFDEF int pdf_free(struct pdf *pdf)
+{
+	PDF_FREE(pdf->xref_tbl);
 }
 
 #endif // AMETHYST_IMPLEMENTATION
