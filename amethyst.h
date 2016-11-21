@@ -130,7 +130,7 @@ struct pdf_ctx
 	FILE *fp;
 };
 
-AMFDEF size_t pdf__getdelim(char buf[], size_t n, int delim, FILE *fp)
+static size_t pdf__getdelim(char buf[], size_t n, int delim, FILE *fp)
 {
 	size_t i = 0;
 	int c;
@@ -151,18 +151,18 @@ AMFDEF size_t pdf__getdelim(char buf[], size_t n, int delim, FILE *fp)
 	return i;
 }
 
-AMFDEF size_t pdf__getline(char buf[], size_t n, FILE *fp)
+static size_t pdf__getline(char buf[], size_t n, FILE *fp)
 {
 	return pdf__getdelim(buf, n, '\n', fp);
 }
 
-AMFDEF void pdf__readline(struct pdf_ctx *ctx)
+static void pdf__readline(struct pdf_ctx *ctx)
 {
 	ctx->ln_sz = pdf__getline(ctx->buf, BUF_SZ, ctx->fp);
 	// assert(ctx->ln_sz < BUF_SZ);
 }
 
-AMFDEF int pdf__parse_ushort_pair(const char *buf, unsigned short *u0,
+static int pdf__parse_ushort_pair(const char *buf, unsigned short *u0,
                                   unsigned short *u1)
 {
 	char *p, *q;
@@ -235,8 +235,8 @@ int pdf__read_name(struct pdf_ctx *ctx, char **name)
 	return !name_len;
 }
 
-AMFDEF int pdf__parse_obj(struct pdf_ctx *ctx, struct pdf_obj *obj);
-AMFDEF int pdf__parse_dict_body(struct pdf_ctx *ctx,
+static int pdf__parse_obj(struct pdf_ctx *ctx, struct pdf_obj *obj);
+static int pdf__parse_dict_body(struct pdf_ctx *ctx,
                                 struct pdf_obj_dict *dict)
 {
 	enum pdf__token token;
@@ -269,7 +269,7 @@ AMFDEF int pdf__parse_dict_body(struct pdf_ctx *ctx,
 	return 0;
 }
 
-AMFDEF int pdf__parse_dict(struct pdf_ctx *ctx, struct pdf_obj_dict *dict)
+static int pdf__parse_dict(struct pdf_ctx *ctx, struct pdf_obj_dict *dict)
 {
 	if (pdf__next_token(ctx) != PDF_TOK_DICT_BEGIN) {
 		PDF_LOG("incorrect dict begin token\n");
@@ -278,7 +278,7 @@ AMFDEF int pdf__parse_dict(struct pdf_ctx *ctx, struct pdf_obj_dict *dict)
 	return pdf__parse_dict_body(ctx, dict);
 }
 
-AMFDEF int pdf__parse_obj(struct pdf_ctx *ctx, struct pdf_obj *obj)
+static int pdf__parse_obj(struct pdf_ctx *ctx, struct pdf_obj *obj)
 {
 	enum pdf__token token = pdf__next_token(ctx);
 	switch (token) {
