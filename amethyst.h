@@ -185,7 +185,10 @@ AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname)
 			unsigned off, gen;
 			char in_use, eol[2];
 			pdf__getline(buf, 256, fp);
-			sscanf(buf, "%10u %5u %c%2c", &off, &gen, &in_use, eol);
+			if (sscanf(buf, "%10u %5u %c%2c", &off, &gen, &in_use, eol) != 4) {
+				PDF_LOG("invalid xref table entry '%s'\n", buf);
+				goto close;
+			}
 			entry->obj_num = objnum + i;
 			entry->offset = off;
 			entry->generation = gen;
