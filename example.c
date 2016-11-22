@@ -1,10 +1,28 @@
 #define AMETHYST_IMPLEMENTATION
 #include "amethyst.h"
 
+int page_draw(struct pdf *pdf, int page_idx)
+{
+	struct pdf_obj *page, *contents_ref;
+	struct pdf_baseobj *contents;
+	page = pdf_get_page(pdf, page_idx);
+	PDF_ERRIF(!page, -1, "failed to retrieve page %d\n", page_idx);
+	contents_ref = pdf_dict_find(&page->dict, "Contents");
+	PDF_ERRIF(!contents_ref, -1, "failed to retrieve Page Contents\n");
+	PDF_ERRIF(contents_ref->type != PDF_OBJ_REF, -1,
+	          "Page Contents is not a reference\n");
+	contents = pdf_get_baseobj(pdf, contents_ref->ref.id);
+	PDF_ERRIF(!contents, -1,
+	          "failed to retrive Page Contents base object\n");
+	PDF_ERRIF(!contents->stream, -1, "Page Contents has no stream\n");
+	PDF_LOG("stream:\n%s\nendstream\n", contents->stream);
+	return 0;
+}
+
 int main(int argc, const char *argv[])
 {
 	struct pdf pdf = {0};
-	int ret = 1;
+	int ret = 1, pages;
 	if (argc != 2) {
 		printf("Usage: parse <file.pdf>\n");
 		return 1;
@@ -19,7 +37,12 @@ int main(int argc, const char *argv[])
 		       entry->offset, entry->in_use ? "in use" : "free");
 	}
 	printf("root: %u.%u\n", pdf.root.num, pdf.root.gen);
-	printf("pages: %d\n", pdf_page_cnt(&pdf));
+	pages = pdf_page_cnt(&pdf);
+	printf("pages: %d\n", pages);
+	for (int i = 0; i < pages; ++i) {
+		printf("page %d:\n", i);
+		page_draw(&pdf, i);
+	}
 	ret = 0;
 
 out:

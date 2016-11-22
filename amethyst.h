@@ -57,7 +57,7 @@ struct pdf_xref
 	struct pdf_objid id;
 	size_t offset;
 	int in_use;
-	struct pdf_baseobj *obj;
+	struct pdf_baseobj *baseobj;
 };
 
 enum pdf_objtype
@@ -128,6 +128,7 @@ AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname);
 AMFDEF int pdf_init_from_stream(struct pdf *pdf, FILE *stream);
 AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id);
 AMFDEF int pdf_page_cnt(struct pdf *pdf);
+AMFDEF struct pdf_obj *pdf_get_page(struct pdf *pdf, int page);
 AMFDEF struct pdf_obj* pdf_dict_find(struct pdf_obj_dict *dict,
                                      const char *name);
 AMFDEF void pdf_free(struct pdf *pdf);
@@ -559,7 +560,7 @@ AMFDEF int pdf_init_from_stream(struct pdf *pdf, FILE *stream)
 			entry->id.gen = gen;
 			entry->offset = off;
 			entry->in_use = in_use == 'n';
-			entry->obj = NULL;
+			entry->baseobj = NULL;
 		}
 		pdf->xref_tbl_sz += cnt;
 		pdf__readline(pdf->ctx);
@@ -606,7 +607,7 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 	}
 	PDF_ERRIF(!xref_entry, NULL, "No such object\n");
 
-	if (!xref_entry->obj) {
+	if (!xref_entry->baseobj) {
 		struct pdf_objid local_id;
 		char *id_end;
 		if (fseek(pdf->ctx->fp, xref_entry->offset, SEEK_SET))
@@ -618,35 +619,90 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 		PDF_ERRIF(id.num != local_id.num || id.gen != local_id.gen, NULL,
 		          "base object id mismatch\n");
 		PDF_ERRIF(strcmp(id_end, " obj"), NULL, "invalid base object header\n");
-		xref_entry->obj = PDF_MALLOC(sizeof(struct pdf_baseobj));
-		if (pdf__parse_obj(pdf->ctx, &xref_entry->obj->obj)) {
-			free(xref_entry->obj);
+		xref_entry->baseobj = PDF_MALLOC(sizeof(struct pdf_baseobj));
+		if (pdf__parse_obj(pdf->ctx, &xref_entry->baseobj->obj)) {
+			free(xref_entry->baseobj);
 			PDF_ERR(NULL, "failed to parse base object properties\n");
 		}
+		PDF_ERRIF(fgetc(pdf->ctx->fp) != '\n', NULL,
+		          "expected new line after base object obj\n");
+		pdf__readline(pdf->ctx);
+		if (strcmp(pdf->ctx->buf, "stream") == 0) {
+			struct pdf_obj *obj = &xref_entry->baseobj->obj, *length;
+
+			PDF_ERRIF(obj->type != PDF_OBJ_DICT, NULL,
+			          "base object has stream but no properties\n");
+			length = pdf_dict_find(&obj->dict, "Length");
+			PDF_ERRIF(!length, NULL, "base object has stream but no Length\n");
+			PDF_ERRIF(length->type != PDF_OBJ_INT, NULL,
+			          "base object Length is not an int\n");
+			xref_entry->baseobj->stream = PDF_MALLOC(length->intg.val+1);
+			fread(xref_entry->baseobj->stream, 1, length->intg.val,
+			      pdf->ctx->fp);
+			PDF_ERRIF(fgetc(pdf->ctx->fp) != '\n', NULL,
+			          "expected new line after base object stream\n");
+			pdf__readline(pdf->ctx);
+			PDF_ERRIF(strcmp(pdf->ctx->buf, "endstream"), NULL,
+			          "missing endstream token\n");
+			pdf__readline(pdf->ctx);
+		}
+		PDF_ERRIF(strcmp(pdf->ctx->buf, "endobj"), NULL,
+		          "missing endobj token\n");
 	}
-	return xref_entry->obj;
+	return xref_entry->baseobj;
+}
+
+static struct pdf_obj *pdf__pages(struct pdf *pdf)
+{
+	struct pdf_baseobj *catalog, *pages;
+	struct pdf_obj *pages_ref;
+
+	catalog = pdf_get_baseobj(pdf, pdf->root);
+	PDF_ERRIF(!catalog, NULL, "failed to retrive Catalog object\n");
+	PDF_ERRIF(catalog->obj.type != PDF_OBJ_DICT, NULL,
+	          "Catalog object is not a dict\n");
+	pages_ref = pdf_dict_find(&catalog->obj.dict, "Pages");
+	PDF_ERRIF(!pages_ref, NULL, "Catalog dict has no Pages property\n");
+	PDF_ERRIF(pages_ref->type != PDF_OBJ_REF, NULL,
+	          "Catalog Pages not a ref\n");
+	pages = pdf_get_baseobj(pdf, pages_ref->ref.id);
+	PDF_ERRIF(!pages, NULL, "failed to retrive Pages object\n");
+	PDF_ERRIF(pages->obj.type != PDF_OBJ_DICT, NULL,
+	          "Pages object is not a dict\n");
+	return &pages->obj;
 }
 
 AMFDEF int pdf_page_cnt(struct pdf *pdf)
 {
-	struct pdf_baseobj *catalog, *pages;
-	struct pdf_obj *pages_ref, *count;
+	struct pdf_obj *pages, *count;
 
-	catalog = pdf_get_baseobj(pdf, pdf->root);
-	PDF_ERRIF(!catalog, -1, "failed to retrive Catalog object\n");
-	PDF_ERRIF(catalog->obj.type != PDF_OBJ_DICT, -1,
-	          "Catalog object is not a dict\n");
-	pages_ref = pdf_dict_find(&catalog->obj.dict, "Pages");
-	PDF_ERRIF(!pages_ref, -1, "Catalog dict has no Pages property\n");
-	PDF_ERRIF(pages_ref->type != PDF_OBJ_REF, -1, "Catalog Pages not a ref\n");
-	pages = pdf_get_baseobj(pdf, pages_ref->ref.id);
+	pages = pdf__pages(pdf);
 	PDF_ERRIF(!pages, -1, "failed to retrive Pages object\n");
-	PDF_ERRIF(pages->obj.type != PDF_OBJ_DICT, -1,
-	          "Pages object is not a dict\n");
-	count = pdf_dict_find(&pages->obj.dict, "Count");
+	count = pdf_dict_find(&pages->dict, "Count");
 	PDF_ERRIF(!count, -1, "Pages dict has no Count property\n");
 	PDF_ERRIF(count->type != PDF_OBJ_INT, -1, "Pages Count not an int\n");
 	return count->intg.val;
+}
+
+AMFDEF struct pdf_obj *pdf_get_page(struct pdf *pdf, int page_idx)
+{
+	struct pdf_obj *pages, *kids, *page_ref;
+	struct pdf_baseobj *page;
+
+	pages = pdf__pages(pdf);
+	PDF_ERRIF(!pages, NULL, "failed to retrive Pages object\n");
+	kids = pdf_dict_find(&pages->dict, "Kids");
+	PDF_ERRIF(!kids, NULL, "failed to retrieve Pages Kids\n");
+	PDF_ERRIF(kids->type != PDF_OBJ_ARR, NULL,
+	          "Pages Kids is not an array\n");
+	PDF_ERRIF(page_idx < 0 || page_idx >= kids->arr.sz, NULL,
+	          "Invalid page num\n");
+	page_ref = kids->arr.entries+page_idx;
+	PDF_ERRIF(page_ref->type != PDF_OBJ_REF, NULL,
+	          "Pages Kids element is not a reference\n");
+	page = pdf_get_baseobj(pdf, page_ref->ref.id);
+	PDF_ERRIF(!page, NULL, "failed to get Page %i baseobj\n", page_idx);
+	return &page->obj;
 }
 
 AMFDEF struct pdf_obj* pdf_dict_find(struct pdf_obj_dict *dict,
