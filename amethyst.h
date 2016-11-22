@@ -706,21 +706,14 @@ AMFDEF int pdf_init_from_stream(struct pdf *pdf, FILE *stream)
 	          "pdf struct data not zero-d\n");
 
 	pdf__readline(pdf->ctx);
-	if (pdf->ctx->ln_sz != 8 || strncmp(pdf->ctx->buf, "%PDF-1.", 7))
+	if (strncmp(pdf->ctx->buf, "%PDF-1.", 7))
 		PDF_ERR(1, "invalid header line\n");
 
 	pdf->version = atoi(pdf->ctx->buf+7);
 	if (pdf->version > 7)
 		PDF_ERR(1, "invalid PDF version '%u'\n", pdf->version);
 
-	if (fseek(pdf->ctx->fp, -6, SEEK_END))
-		PDF_ERR(1, "failed to lookup EOF comment\n");
-
-	pdf__readline(pdf->ctx);
-	if (pdf->ctx->ln_sz != 5 || strcmp(pdf->ctx->buf, "%%EOF"))
-		PDF_ERR(1, "invalid EOF comment\n");
-
-	if (fseek(pdf->ctx->fp, -20, SEEK_CUR))
+	if (fseek(pdf->ctx->fp, -25, SEEK_END))
 		PDF_ERR(1, "failed to lookup xref table position\n");
 	pdf->ctx->ln_sz = fread(pdf->ctx->buf, 1, 256, pdf->ctx->fp);
 	p = strstr(pdf->ctx->buf, "startxref");
@@ -732,7 +725,7 @@ AMFDEF int pdf_init_from_stream(struct pdf *pdf, FILE *stream)
 		PDF_ERR(1, "failed to lookup xref table\n");
 
 	pdf__readline(pdf->ctx);
-	if (strcmp(pdf->ctx->buf, "xref"))
+	if (strncmp(pdf->ctx->buf, "xref", 4))
 		PDF_ERR(1, "xref table not found in assigned location\n");
 
 	pdf__readline(pdf->ctx);
@@ -756,7 +749,8 @@ AMFDEF int pdf_init_from_stream(struct pdf *pdf, FILE *stream)
 			unsigned off, gen;
 			char in_use, eol[2];
 			pdf__readline(pdf->ctx);
-			if (sscanf(pdf->ctx->buf, "%10u %5u %c%2c", &off, &gen, &in_use, eol) != 4)
+			if (sscanf(pdf->ctx->buf, "%10u %5u %c%2c", &off, &gen, &in_use,
+			           eol) != 4)
 				PDF_ERR(1, "invalid xref table entry '%s'\n", pdf->ctx->buf);
 			entry->id.num = objnum + i;
 			entry->id.gen = gen;
@@ -807,16 +801,16 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 			PDF_ERR(NULL, "failed to parse base object header\n");
 		PDF_ERRIF(id.num != local_id.num || id.gen != local_id.gen, NULL,
 		          "base object id mismatch\n");
-		PDF_ERRIF(strcmp(id_end, " obj"), NULL, "invalid base object header\n");
+		PDF_ERRIF(strncmp(id_end, " obj", 4), NULL,
+		          "invalid base object header\n");
 		xref_entry->baseobj = PDF_MALLOC(sizeof(struct pdf_baseobj));
 		if (pdf__parse_obj(pdf->ctx, &xref_entry->baseobj->obj)) {
 			free(xref_entry->baseobj);
 			PDF_ERR(NULL, "failed to parse base object properties\n");
 		}
-		PDF_ERRIF(fgetc(pdf->ctx->fp) != '\n', NULL,
-		          "expected new line after base object obj\n");
+		pdf__readline(pdf->ctx); // consume rest of line
 		pdf__readline(pdf->ctx);
-		if (strcmp(pdf->ctx->buf, "stream") == 0) {
+		if (strncmp(pdf->ctx->buf, "stream", 6) == 0) {
 			struct pdf_obj *obj = &xref_entry->baseobj->obj, *length;
 
 			PDF_ERRIF(obj->type != PDF_OBJ_DICT, NULL,
@@ -829,16 +823,15 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 			fread(xref_entry->baseobj->stream, 1, length->intg.val,
 			      pdf->ctx->fp);
 			xref_entry->baseobj->stream[length->intg.val] = '\0';
-			PDF_ERRIF(fgetc(pdf->ctx->fp) != '\n', NULL,
-			          "expected new line after base object stream\n");
+			pdf__readline(pdf->ctx); // consume rest of line
 			pdf__readline(pdf->ctx);
-			PDF_ERRIF(strcmp(pdf->ctx->buf, "endstream"), NULL,
-			          "missing endstream token\n");
+			PDF_ERRIF(strncmp(pdf->ctx->buf, "endstream", 9), NULL,
+			          "missing endstream token (%s)\n", pdf->ctx->buf);
 			pdf__readline(pdf->ctx);
 		}
 		else
 			xref_entry->baseobj->stream = NULL;
-		PDF_ERRIF(strcmp(pdf->ctx->buf, "endobj"), NULL,
+		PDF_ERRIF(strncmp(pdf->ctx->buf, "endobj", 6), NULL,
 		          "missing endobj token\n");
 	}
 	return xref_entry->baseobj;
