@@ -5,8 +5,16 @@ int page_draw(struct pdf *pdf, int page_idx)
 {
 	struct pdf_obj *page, *contents_ref;
 	struct pdf_baseobj *contents;
+	int bounds[4];
+
 	page = pdf_get_page(pdf, page_idx);
 	PDF_ERRIF(!page, -1, "failed to retrieve page %d\n", page_idx);
+
+	PDF_ERRIF(pdf_get_page_bounds(pdf, page_idx, bounds), -1,
+	          "failed to get page %d bounds\n", page_idx);
+	PDF_LOG("bounds: [%d %d %d %d]\n", bounds[0], bounds[1], bounds[2],
+	        bounds[3]);
+
 	contents_ref = pdf_dict_find(&page->dict, "Contents");
 	PDF_ERRIF(!contents_ref, -1, "failed to retrieve Page Contents\n");
 	PDF_ERRIF(contents_ref->type != PDF_OBJ_REF, -1,

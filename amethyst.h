@@ -129,6 +129,7 @@ AMFDEF int pdf_init_from_stream(struct pdf *pdf, FILE *stream);
 AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id);
 AMFDEF int pdf_page_cnt(struct pdf *pdf);
 AMFDEF struct pdf_obj *pdf_get_page(struct pdf *pdf, int page);
+AMFDEF int pdf_get_page_bounds(struct pdf *pdf, int page, int bounds[4]);
 AMFDEF struct pdf_obj* pdf_dict_find(struct pdf_obj_dict *dict,
                                      const char *name);
 AMFDEF void pdf_free(struct pdf *pdf);
@@ -703,6 +704,37 @@ AMFDEF struct pdf_obj *pdf_get_page(struct pdf *pdf, int page_idx)
 	page = pdf_get_baseobj(pdf, page_ref->ref.id);
 	PDF_ERRIF(!page, NULL, "failed to get Page %i baseobj\n", page_idx);
 	return &page->obj;
+}
+
+AMFDEF int pdf_get_page_bounds(struct pdf *pdf, int page_idx, int bounds[4])
+{
+	struct pdf_obj *page, *box;
+	page = pdf_get_page(pdf, page_idx);
+	PDF_ERRIF(!page, 1, "failed to get Page %i\n", page_idx);
+	box = pdf_dict_find(&page->dict, "MediaBox");
+	if (!box) {
+		struct pdf_obj *parent_ref;
+		struct pdf_baseobj *pages;
+		parent_ref = pdf_dict_find(&page->dict, "Parent");
+		PDF_ERRIF(!parent_ref, 1, "Page %i missing Parent\n", page_idx);
+		PDF_ERRIF(parent_ref->type != PDF_OBJ_REF, 1,
+		          "Page %i Parent is not a reference\n", page_idx);
+		pages = pdf_get_baseobj(pdf, parent_ref->ref.id);
+		PDF_ERRIF(!pages, 1, "failed to locate Pages baseobj\n");
+		PDF_ERRIF(pages->obj.type != PDF_OBJ_DICT, 1,
+		          "Pages baseobj obj is not a dict\n");
+		box = pdf_dict_find(&pages->obj.dict, "MediaBox");
+		PDF_ERRIF(!box, 1, "No MediaBox in Pages or Page %i\n", page_idx);
+	}
+	PDF_ERRIF(box->type != PDF_OBJ_ARR, 1, "MediaBox is not an array\n");
+	PDF_ERRIF(box->arr.sz != 4, 1, "MediaBox does not have 4 elements\n");
+	for (size_t i = 0; i < box->arr.sz; ++i) {
+		struct pdf_obj *dim = box->arr.entries+i;
+		PDF_ERRIF(dim->type != PDF_OBJ_INT, 1,
+		          "MediaBox[%lu] is not an int\n", i);
+		bounds[i] = dim->intg.val;
+	}
+	return 0;
 }
 
 AMFDEF struct pdf_obj* pdf_dict_find(struct pdf_obj_dict *dict,
