@@ -68,9 +68,11 @@ enum pdf_objtype
 {
 	PDF_OBJ_ARR,
 	PDF_OBJ_DICT,
+	PDF_OBJ_HEX,
 	PDF_OBJ_INT,
 	PDF_OBJ_NAME,
 	PDF_OBJ_REF,
+	PDF_OBJ_STR,
 };
 
 struct pdf_obj;
@@ -84,6 +86,12 @@ struct pdf_dict_entry;
 struct pdf_obj_dict
 {
 	struct pdf_dict_entry *entries;
+	size_t sz;
+};
+
+struct pdf_obj_hex
+{
+	char *val;
 	size_t sz;
 };
 
@@ -102,6 +110,11 @@ struct pdf_obj_ref
 	struct pdf_objid id;
 };
 
+struct pdf_obj_str
+{
+	char *val;
+};
+
 struct pdf_obj
 {
 	enum pdf_objtype type;
@@ -110,8 +123,10 @@ struct pdf_obj
 		struct pdf_obj_arr arr;
 		struct pdf_obj_dict dict;
 		struct pdf_obj_int intg;
+		struct pdf_obj_hex hex;
 		struct pdf_obj_name name;
 		struct pdf_obj_ref ref;
+		struct pdf_obj_str str;
 	};
 };
 
@@ -257,10 +272,14 @@ enum pdf__token
 	PDF_TOK_DICT_BEGIN,
 	PDF_TOK_DICT_END,
 	PDF_TOK_EOF,
+	PDF_TOK_HEX_BEGIN,
+	PDF_TOK_HEX_END,
 	PDF_TOK_INVALID,
 	PDF_TOK_NAME_BEGIN,
 	PDF_TOK_NUMERIC,
 	PDF_TOK_REF_END,
+	PDF_TOK_STR_BEGIN,
+	PDF_TOK_STR_END,
 };
 
 static const char *pdf__token_names[] = {
@@ -269,10 +288,14 @@ static const char *pdf__token_names[] = {
 	"Dictionary begin",
 	"Dictionary end",
 	"EOF",
+	"Hex begin",
+	"Hex end",
 	"Invalid",
 	"Name begin",
 	"Numeric",
 	"Ref end",
+	"String begin",
+	"String end",
 };
 
 void pdf__reset_buf(struct pdf__ctx *ctx)
@@ -315,15 +338,38 @@ int pdf__consume_int(struct pdf__ctx *ctx, int *val)
 	return 0;
 }
 
+int pdf__consume_to(struct pdf__ctx *ctx, int end)
+{
+	unsigned len = ctx->ln_sz;
+	int c;
+	while ((c = fgetc(ctx->fp)) != EOF && c != end)
+		ctx->buf[len++] = c;
+	ctx->buf[len] = '\0';
+	ctx->ln_sz = len;
+	return c != end;
+}
+
+int pdf__consume_to_ignoring_ws(struct pdf__ctx *ctx, int end)
+{
+	unsigned len = ctx->ln_sz;
+	int c;
+	while ((c = fgetc(ctx->fp)) != EOF && c != end)
+		if (!isspace(c))
+			ctx->buf[len++] = c;
+	ctx->buf[len] = '\0';
+	ctx->ln_sz = len;
+	return c != end;
+}
+
 #ifdef PDF_DEBUG
-enum pdf__token _pdf__next_token(struct pdf__ctx *ctx);
+enum pdf__token pdf__next_token_dbg(struct pdf__ctx *ctx);
 enum pdf__token pdf__next_token(struct pdf__ctx *ctx)
 {
-	enum pdf__token token = _pdf__next_token(ctx);
+	enum pdf__token token = pdf__next_token_dbg(ctx);
 	PDF_LOG("token: %s\n", pdf__token_names[token]);
 	return token;
 }
-enum pdf__token _pdf__next_token(struct pdf__ctx *ctx)
+enum pdf__token pdf__next_token_dbg(struct pdf__ctx *ctx)
 #else
 enum pdf__token pdf__next_token(struct pdf__ctx *ctx)
 #endif
@@ -354,17 +400,23 @@ enum pdf__token pdf__next_token(struct pdf__ctx *ctx)
 			return PDF_TOK_ARR_END;
 		break;
 		case '<':
-			if ((c = fgetc(ctx->fp)) == '<')
+			if ((c = fgetc(ctx->fp)) != '<') {
+				ungetc(c, ctx->fp);
+				return PDF_TOK_HEX_BEGIN;
+			} else
 				return PDF_TOK_DICT_BEGIN;
-			ungetc(c, ctx->fp);
-			return PDF_TOK_INVALID;
 		break;
 		case '>':
-			if ((c = fgetc(ctx->fp)) == '>')
+			if ((c = fgetc(ctx->fp)) != '>') {
+				ungetc(c, ctx->fp);
+				return PDF_TOK_HEX_END;
+			} else
 				return PDF_TOK_DICT_END;
-			ungetc(c, ctx->fp);
-			return PDF_TOK_INVALID;
 		break;
+		case '(':
+			return PDF_TOK_STR_BEGIN;
+		case ')':
+			return PDF_TOK_STR_BEGIN;
 		case EOF:
 			return PDF_TOK_EOF;
 		break;
@@ -405,17 +457,86 @@ enum pdf__token pdf__next_token(struct pdf__ctx *ctx)
 	}
 }
 
-int pdf__read_name(struct pdf__ctx *ctx, char **name)
+int pdf__move_buf(struct pdf__ctx *ctx, char **dst)
 {
 	int ret = 1;
-	pdf__consume_word(ctx);
 	if (ctx->ln_sz) {
-		*name = PDF_MALLOC(ctx->ln_sz+1);
-		memcpy(*name, ctx->buf, ctx->ln_sz);
-		(*name)[ctx->ln_sz] = '\0';
+		*dst = PDF_MALLOC(ctx->ln_sz+1);
+		memcpy(*dst, ctx->buf, ctx->ln_sz);
+		(*dst)[ctx->ln_sz] = '\0';
+		ret = 0;
+	}
+	pdf__reset_buf(ctx);
+	return ret;
+}
+
 #ifdef PDF_DEBUG
+int pdf__read_name_dbg(struct pdf__ctx *ctx, char **name);
+int pdf__read_name(struct pdf__ctx *ctx, char **name)
+{
+	int ret = pdf__read_name_dbg(ctx, name);
+	if (PDF_OK(ret))
 		PDF_LOG("name: %s\n", *name);
+	return ret;
+}
+int pdf__read_name_dbg(struct pdf__ctx *ctx, char **name)
+#else
+int pdf__read_name(struct pdf__ctx *ctx, char **name)
 #endif
+{
+	pdf__consume_word(ctx);
+	return pdf__move_buf(ctx, name);
+}
+
+#ifdef PDF_DEBUG
+static int pdf__read_str_dbg(struct pdf__ctx *ctx, char **str);
+static int pdf__read_str(struct pdf__ctx *ctx, char **str)
+{
+	int ret = pdf__read_str_dbg(ctx, str);
+	if (PDF_OK(ret))
+		PDF_LOG("str: %s\n", *str);
+	return ret;
+}
+static int pdf__read_str_dbg(struct pdf__ctx *ctx, char **str)
+#else
+static int pdf__read_str(struct pdf__ctx *ctx, char **str)
+#endif
+{
+	if (pdf__consume_to(ctx, ')'))
+		PDF_ERR(1, "Error reading string\n");
+	return pdf__move_buf(ctx, str);
+}
+
+#ifdef PDF_DEBUG
+static int pdf__read_hex_dbg(struct pdf__ctx *ctx, struct pdf_obj_hex *hex);
+static int pdf__read_hex(struct pdf__ctx *ctx, struct pdf_obj_hex *hex)
+{
+	int ret = pdf__read_hex_dbg(ctx, hex);
+	if (PDF_OK(ret)) {
+		PDF_LOG("hex: ");
+		for (int i = 0; i < hex->sz; ++i)
+			PDF_LOG("%02x", hex->val[i] & 0xff);
+		PDF_LOG("\n");
+	}
+	return ret;
+}
+static int pdf__read_hex_dbg(struct pdf__ctx *ctx, struct pdf_obj_hex *hex)
+#else
+static int pdf__read_hex(struct pdf__ctx *ctx, struct pdf_obj_hex *hex)
+#endif
+{
+	int ret = 1;
+	if (pdf__consume_to_ignoring_ws(ctx, '>'))
+		PDF_ERR(1, "Error reading hex string\n");
+	if (ctx->ln_sz) {
+		hex->sz = (ctx->ln_sz+1)/2;
+		hex->val = PDF_MALLOC(hex->sz);
+		for (int i = 0; i < hex->sz; ++i) {
+			char c = ctx->buf[2*(i+1)];
+			ctx->buf[2*(i+1)] = '\0';
+			hex->val[i] = strtol(ctx->buf+2*i, NULL, 16);
+			ctx->buf[2*(i+1)] = c;
+		}
 		ret = 0;
 	}
 	pdf__reset_buf(ctx);
@@ -492,6 +613,9 @@ static int pdf__parse_obj_after(struct pdf__ctx *ctx, struct pdf_obj *obj,
 		obj->dict.sz = 0;
 		return pdf__parse_dict_body(ctx, &obj->dict);
 	break;
+	case PDF_TOK_HEX_BEGIN:
+		obj->type = PDF_OBJ_HEX;
+		return pdf__read_hex(ctx, &obj->hex);
 	case PDF_TOK_NAME_BEGIN:
 		obj->type = PDF_OBJ_NAME;
 		return pdf__read_name(ctx, &obj->name.val);
@@ -510,13 +634,18 @@ static int pdf__parse_obj_after(struct pdf__ctx *ctx, struct pdf_obj *obj,
 #endif
 		ctx->int_cnt = 0;
 	break;
+	case PDF_TOK_STR_BEGIN:
+		obj->type = PDF_OBJ_STR;
+		return pdf__read_str(ctx, &obj->hex.val);
 	case PDF_TOK_ARR_END:
 	case PDF_TOK_DICT_END:
+	case PDF_TOK_HEX_END:
+	case PDF_TOK_STR_END:
 	case PDF_TOK_EOF:
-	case PDF_TOK_INVALID:
-		PDF_ERR(1, "Invalid token (%s) when parsing obj\n",
+		PDF_ERR(1, "Unexpected token (%s) when parsing obj\n",
 		        pdf__token_names[token]);
-	break;
+	case PDF_TOK_INVALID:
+		PDF_ERR(1, "Invalid token (%c) when parsing obj\n", fgetc(ctx->fp));
 	}
 	return 0;
 }
@@ -818,12 +947,18 @@ static void pdf__free_obj(struct pdf_obj *obj)
 	case PDF_OBJ_DICT:
 		pdf__free_dict(&obj->dict);
 	break;
+	case PDF_OBJ_HEX:
+		PDF_FREE(obj->hex.val);
+	break;
 	case PDF_OBJ_INT:
 	break;
 	case PDF_OBJ_NAME:
 		PDF_FREE(obj->name.val);
 	break;
 	case PDF_OBJ_REF:
+	break;
+	case PDF_OBJ_STR:
+		PDF_FREE(obj->str.val);
 	break;
 	}
 }
