@@ -19,6 +19,7 @@ int main(int argc, const char *argv[])
 		       entry->offset, entry->in_use ? "in use" : "free");
 	}
 	printf("root: %u.%u\n", pdf.root.num, pdf.root.gen);
+	printf("pages: %d\n", pdf_page_cnt(&pdf));
 	ret = 0;
 
 out:
