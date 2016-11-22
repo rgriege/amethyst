@@ -488,12 +488,45 @@ static int pdf__parse_obj(struct pdf__ctx *ctx, struct pdf_obj *obj)
 	return pdf__parse_obj_after(ctx, obj, pdf__next_token(ctx));
 }
 
+static int pdf__validate_trailer(struct pdf *pdf,
+                                 struct pdf_obj_dict *trailer)
+{
+	struct pdf_obj *obj;
+
+	if (pdf__parse_dict(pdf->ctx, trailer))
+		PDF_ERR(1, "failed to parse trailer\n");
+	obj = pdf_dict_find(trailer, "Root");
+	PDF_ERRIF(!obj, 1, "trailer dict has no Root entry\n");
+	PDF_ERRIF(obj->type != PDF_OBJ_REF, 1,
+	          "trailer dict Root entry is not a ref\n");
+	pdf->root = obj->ref.id;
+	obj = pdf_dict_find(trailer, "Size");
+	PDF_ERRIF(!obj, 1, "trailer dict has no Size entry\n");
+	PDF_ERRIF(obj->type != PDF_OBJ_INT, 1,
+	          "trailer dict Size entry is not an integer\n");
+	PDF_ERRIF(obj->intg.val != pdf->xref_tbl_sz+1, 1,
+	          "trailer dict Size (%d) != xref table size (%lu)\n",
+		        obj->intg.val, pdf->xref_tbl_sz+1);
+
+	return 0;
+}
+
+static void pdf__free_obj(struct pdf_obj *obj);
+static void pdf__free_dict(struct pdf_obj_dict *dict)
+{
+	for (size_t i = 0; i < dict->sz; ++i) {
+		struct pdf_dict_entry *entry = dict->entries+i;
+		PDF_FREE(entry->name);
+		pdf__free_obj(&entry->obj);
+	}
+	PDF_FREE(dict->entries);
+}
+
 AMFDEF int pdf_init_from_stream(struct pdf *pdf, FILE *stream)
 {
 	char *p;
-	int xref_pos;
+	int xref_pos, ret;
 	struct pdf_obj_dict trailer = {0};
-	struct pdf_obj *obj;
 
 	pdf->ctx = PDF_MALLOC(sizeof(struct pdf__ctx));
 	pdf->ctx->buf[0] = '\0';
@@ -571,22 +604,9 @@ AMFDEF int pdf_init_from_stream(struct pdf *pdf, FILE *stream)
 	          "too few (%lu) objects found in xref table\n",
 	          pdf->xref_tbl_sz);
 
-	if (pdf__parse_dict(pdf->ctx, &trailer))
-		PDF_ERR(1, "failed to parse trailer\n");
-	obj = pdf_dict_find(&trailer, "Root");
-	PDF_ERRIF(!obj, 1, "trailer dict has no Root entry\n");
-	PDF_ERRIF(obj->type != PDF_OBJ_REF, 1,
-	          "trailer dict Root entry is not a ref\n");
-	pdf->root = obj->ref.id;
-	obj = pdf_dict_find(&trailer, "Size");
-	PDF_ERRIF(!obj, 1, "trailer dict has no Size entry\n");
-	PDF_ERRIF(obj->type != PDF_OBJ_INT, 1,
-	          "trailer dict Size entry is not an integer\n");
-	PDF_ERRIF(obj->intg.val != pdf->xref_tbl_sz+1, 1,
-	          "trailer dict Size (%d) != xref table size (%lu)\n",
-		        obj->intg.val, pdf->xref_tbl_sz+1);
-
-	return 0;
+	ret = pdf__validate_trailer(pdf, &trailer);
+	pdf__free_dict(&trailer);
+	return ret;
 }
 
 AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname)
@@ -640,6 +660,7 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 			xref_entry->baseobj->stream = PDF_MALLOC(length->intg.val+1);
 			fread(xref_entry->baseobj->stream, 1, length->intg.val,
 			      pdf->ctx->fp);
+			xref_entry->baseobj->stream[length->intg.val] = '\0';
 			PDF_ERRIF(fgetc(pdf->ctx->fp) != '\n', NULL,
 			          "expected new line after base object stream\n");
 			pdf__readline(pdf->ctx);
@@ -647,6 +668,8 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 			          "missing endstream token\n");
 			pdf__readline(pdf->ctx);
 		}
+		else
+			xref_entry->baseobj->stream = NULL;
 		PDF_ERRIF(strcmp(pdf->ctx->buf, "endobj"), NULL,
 		          "missing endobj token\n");
 	}
@@ -746,11 +769,42 @@ AMFDEF struct pdf_obj* pdf_dict_find(struct pdf_obj_dict *dict,
 	return NULL;
 }
 
+static void pdf__free_obj(struct pdf_obj *obj)
+{
+	switch (obj->type) {
+	case PDF_OBJ_ARR:
+		for (size_t i = 0; i < obj->arr.sz; ++i)
+			pdf__free_obj(obj->arr.entries+i);
+		PDF_FREE(obj->arr.entries);
+	break;
+	case PDF_OBJ_DICT:
+		pdf__free_dict(&obj->dict);
+	break;
+	case PDF_OBJ_INT:
+	break;
+	case PDF_OBJ_NAME:
+		PDF_FREE(obj->name.val);
+	break;
+	case PDF_OBJ_REF:
+	break;
+	}
+}
+
 AMFDEF void pdf_free(struct pdf *pdf)
 {
 	fclose(pdf->ctx->fp);
 	PDF_FREE(pdf->ctx);
-	PDF_FREE(pdf->xref_tbl);
+	if (pdf->xref_tbl) {
+		for (size_t i = 0; i < pdf->xref_tbl_sz; ++i) {
+			struct pdf_xref *xref = pdf->xref_tbl + i;
+			if (xref->baseobj) {
+				pdf__free_obj(&xref->baseobj->obj);
+				PDF_FREE(xref->baseobj->stream);
+				PDF_FREE(xref->baseobj);
+			}
+		}
+		PDF_FREE(pdf->xref_tbl);
+	}
 }
 
 #endif // AMETHYST_IMPLEMENTATION
