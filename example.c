@@ -23,7 +23,7 @@ int page_draw(struct pdf *pdf, int page_idx)
 	PDF_ERRIF(!contents, -1,
 	          "failed to retrive Page Contents base object\n");
 	PDF_ERRIF(!contents->stream, -1, "Page Contents has no stream\n");
-	PDF_LOG("stream:\n%s\nendstream\n", contents->stream);
+	pdf_ps_exec(contents->stream);
 	return 0;
 }
 
