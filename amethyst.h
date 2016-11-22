@@ -269,10 +269,13 @@ int pdf__consume_int(struct pdf__ctx *ctx, int *val)
 	ctx->ints[0] = ctx->ints[1];
 	ctx->ints[1] = ctx->ints[2];
 	--ctx->int_cnt;
+#ifdef PDF_DEBUG
 	PDF_LOG("consume int: %d\n", *val);
+#endif
 	return 0;
 }
 
+#ifdef PDF_DEBUG
 enum pdf__token _pdf__next_token(struct pdf__ctx *ctx);
 enum pdf__token pdf__next_token(struct pdf__ctx *ctx)
 {
@@ -281,6 +284,9 @@ enum pdf__token pdf__next_token(struct pdf__ctx *ctx)
 	return token;
 }
 enum pdf__token _pdf__next_token(struct pdf__ctx *ctx)
+#else
+enum pdf__token pdf__next_token(struct pdf__ctx *ctx)
+#endif
 {
 	int c;
 	pdf__reset_buf(ctx);
@@ -367,7 +373,9 @@ int pdf__read_name(struct pdf__ctx *ctx, char **name)
 		*name = PDF_MALLOC(ctx->ln_sz+1);
 		memcpy(*name, ctx->buf, ctx->ln_sz);
 		(*name)[ctx->ln_sz] = '\0';
+#ifdef PDF_DEBUG
 		PDF_LOG("name: %s\n", *name);
+#endif
 		ret = 0;
 	}
 	pdf__reset_buf(ctx);
@@ -457,7 +465,9 @@ static int pdf__parse_obj_after(struct pdf__ctx *ctx, struct pdf_obj *obj,
 		obj->type = PDF_OBJ_REF;
 		obj->ref.id.num = ctx->ints[0];
 		obj->ref.id.gen = ctx->ints[1];
+#ifdef PDF_DEBUG
 		PDF_LOG("pdf_obj_ref: %u.%u\n", obj->ref.id.num, obj->ref.id.gen);
+#endif
 		ctx->int_cnt = 0;
 	break;
 	case PDF_TOK_ARR_END:
