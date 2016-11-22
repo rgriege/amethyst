@@ -1,10 +1,19 @@
 #define AMETHYST_IMPLEMENTATION
 #include "amethyst.h"
 
+int obj_draw(struct pdf *pdf, struct pdf_objid id)
+{
+	struct pdf_baseobj *contents = pdf_get_baseobj(pdf, id);
+	PDF_ERRIF(!contents, -1,
+	          "failed to retrive Page Contents base object\n");
+	PDF_ERRIF(!contents->stream, -1, "Page Contents has no stream\n");
+	pdf_ps_exec(contents->stream);
+	return 0;
+}
+
 int page_draw(struct pdf *pdf, int page_idx)
 {
 	struct pdf_obj *page, *contents_ref;
-	struct pdf_baseobj *contents;
 	int bounds[4];
 
 	page = pdf_get_page(pdf, page_idx);
@@ -17,13 +26,19 @@ int page_draw(struct pdf *pdf, int page_idx)
 
 	contents_ref = pdf_dict_find(&page->dict, "Contents");
 	PDF_ERRIF(!contents_ref, -1, "failed to retrieve Page Contents\n");
-	PDF_ERRIF(contents_ref->type != PDF_OBJ_REF, -1,
-	          "Page Contents is not a reference\n");
-	contents = pdf_get_baseobj(pdf, contents_ref->ref.id);
-	PDF_ERRIF(!contents, -1,
-	          "failed to retrive Page Contents base object\n");
-	PDF_ERRIF(!contents->stream, -1, "Page Contents has no stream\n");
-	pdf_ps_exec(contents->stream);
+	if (contents_ref->type == PDF_OBJ_ARR) {
+		for (size_t i = 0; i < contents_ref->arr.sz; ++i) {
+			struct pdf_obj *elem = contents_ref->arr.entries+i;
+			PDF_ERRIF(elem->type != PDF_OBJ_REF, -1,
+			          "Page Contents array element is not a valid type\n");
+			if (!PDF_OK(obj_draw(pdf, elem->ref.id)))
+				PDF_ERR(-1, "Failed to draw page contents array element\n");
+		}
+	} else if (contents_ref->type == PDF_OBJ_REF) {
+		if (!PDF_OK(obj_draw(pdf, contents_ref->ref.id)))
+			PDF_ERR(-1, "Failed to draw page contents\n");
+	} else
+		PDF_ERR(-1, "Page Contents is not a valid type\n");
 	return 0;
 }
 
