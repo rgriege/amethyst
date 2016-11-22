@@ -386,6 +386,7 @@ enum pdf__token pdf__next_token(struct pdf__ctx *ctx)
 			case '>':
 			case EOF:
 			case '/':
+			case '\n':
 				ungetc(c, ctx->fp);
 				return PDF_TOK_NUMERIC;
 			default:
