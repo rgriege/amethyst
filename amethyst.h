@@ -154,6 +154,9 @@ AMFDEF struct pdf_obj *pdf_get_page(struct pdf *pdf, int page);
 AMFDEF int pdf_get_page_bounds(struct pdf *pdf, int page, int bounds[4]);
 AMFDEF struct pdf_obj* pdf_dict_find(struct pdf_obj_dict *dict,
                                      const char *name);
+AMFDEF struct pdf_obj *pdf_dict_find_deref(struct pdf *pdf,
+                                           struct pdf_obj_dict *dict,
+                                           const char *name);
 AMFDEF void pdf_free(struct pdf *pdf);
 
 /*
@@ -812,14 +815,20 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 		pdf__readline(pdf->ctx);
 		if (strncmp(pdf->ctx->buf, "stream", 6) == 0) {
 			struct pdf_obj *obj = &xref_entry->baseobj->obj, *length;
+			fpos_t pos;
 
+			PDF_ERRIF(fgetpos(pdf->ctx->fp, &pos), NULL,
+			          "failed to save file pos when parsing stream\n");
 			PDF_ERRIF(obj->type != PDF_OBJ_DICT, NULL,
 			          "base object has stream but no properties\n");
-			length = pdf_dict_find(&obj->dict, "Length");
+			length = pdf_dict_find_deref(pdf, &obj->dict, "Length");
 			PDF_ERRIF(!length, NULL, "base object has stream but no Length\n");
 			PDF_ERRIF(length->type != PDF_OBJ_INT, NULL,
 			          "base object Length is not an int\n");
 			xref_entry->baseobj->stream = PDF_MALLOC(length->intg.val+1);
+			/* pdf_dict_find_deref can move the stream position */
+			PDF_ERRIF(fsetpos(pdf->ctx->fp, &pos), NULL,
+			          "failed to restore file pos when parsing stream\n");
 			fread(xref_entry->baseobj->stream, 1, length->intg.val,
 			      pdf->ctx->fp);
 			xref_entry->baseobj->stream[length->intg.val] = '\0';
@@ -928,6 +937,22 @@ AMFDEF struct pdf_obj* pdf_dict_find(struct pdf_obj_dict *dict,
 		if (strcmp((dict->entries+i)->name, name) == 0)
 			return &(dict->entries+i)->obj;
 	return NULL;
+}
+
+AMFDEF struct pdf_obj *pdf_dict_find_deref(struct pdf *pdf,
+                                           struct pdf_obj_dict *dict,
+                                           const char *name)
+{
+	struct pdf_baseobj *baseobj;
+	struct pdf_obj *obj = pdf_dict_find(dict, name);
+	if (!obj)
+		return NULL;
+	if (obj->type != PDF_OBJ_REF)
+		return obj;
+	baseobj = pdf_get_baseobj(pdf, obj->ref.id);
+	if (!baseobj)
+		return NULL;
+	return baseobj->obj.type != PDF_OBJ_REF ? &baseobj->obj : NULL;
 }
 
 static void pdf__free_obj(struct pdf_obj *obj)
