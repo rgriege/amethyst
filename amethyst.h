@@ -12,6 +12,7 @@
 #endif
 
 #include <stddef.h>
+#include <stdio.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -105,6 +106,7 @@ struct pdf_dict_entry
 
 
 AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname);
+AMFDEF int pdf_init_from_stream(struct pdf *pdf, FILE *stream);
 AMFDEF struct pdf_obj* pdf_dict_find(struct pdf_obj_dict *dict,
                                      const char *name);
 AMFDEF void pdf_free(struct pdf *pdf);
@@ -118,9 +120,12 @@ AMFDEF void pdf_free(struct pdf *pdf);
 #ifdef AMETHYST_IMPLEMENTATION
 
 #include <ctype.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define PDF_ERR(code, ...) { PDF_LOG(__VA_ARGS__); return code; }
+#define PDF_ERRIF(cond, code, ...) \
+	if (cond) PDF_ERR(code, __VA_ARGS__)
 
 #define BUF_SZ 256
 struct pdf_ctx
@@ -242,28 +247,19 @@ static int pdf__parse_dict_body(struct pdf_ctx *ctx,
 	enum pdf__token token;
 	struct pdf_dict_entry *entry;
 
-	if (dict->entries || dict->sz) {
-		PDF_LOG("dict struct data not zero-d\n");
-		return 1;
-	}
+	PDF_ERRIF(dict->entries || dict->sz, 1, "dict struct not 0-d\n");
 
 	token = pdf__next_token(ctx);
 	while (token != PDF_TOK_DICT_END) {
-		if (token != PDF_TOK_NAME_BEGIN) {
-			PDF_LOG("dict entry should always begin with a name begin token\n");
-			return 1;
-		}
+		PDF_ERRIF(token != PDF_TOK_NAME_BEGIN, 1,
+		          "dict entry should begin with a name begin token\n");
 		dict->entries = PDF_REALLOC(dict->entries,
 		                            ++dict->sz*sizeof(struct pdf_dict_entry));
 		entry = dict->entries + dict->sz - 1;
-		if (pdf__read_name(ctx, &entry->name)) {
-			PDF_LOG("failed to parse dict entry name\n");
-			return 1;
-		}
-		if (pdf__parse_obj(ctx, &entry->obj)) {
-			PDF_LOG("failed to parse dict entry obj\n");
-			return 1;
-		}
+		if (pdf__read_name(ctx, &entry->name))
+			PDF_ERR(1, "failed to parse dict entry name\n");
+		if (pdf__parse_obj(ctx, &entry->obj))
+			PDF_ERR(1, "failed to parse dict entry obj\n");
 		token = pdf__next_token(ctx);
 	}
 	return 0;
@@ -271,10 +267,8 @@ static int pdf__parse_dict_body(struct pdf_ctx *ctx,
 
 static int pdf__parse_dict(struct pdf_ctx *ctx, struct pdf_obj_dict *dict)
 {
-	if (pdf__next_token(ctx) != PDF_TOK_DICT_BEGIN) {
-		PDF_LOG("incorrect dict begin token\n");
-		return 1;
-	}
+	if (pdf__next_token(ctx) != PDF_TOK_DICT_BEGIN)
+		PDF_ERR(1, "incorrect dict begin token\n");
 	return pdf__parse_dict_body(ctx, dict);
 }
 
@@ -304,95 +298,61 @@ static int pdf__parse_obj(struct pdf_ctx *ctx, struct pdf_obj *obj)
 	break;
 	case PDF_TOK_EOF:
 	case PDF_TOK_INVALID:
-		PDF_LOG("Got token %d when parsing obj\n", token);
-		return 1;
+		PDF_ERR(1, "Got token %d when parsing obj\n", token);
 	break;
 	}
-	PDF_LOG("Successfully parsed a %d\n", obj->type);
 	return 0;
 }
 
-AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname)
+AMFDEF int pdf_init_from_stream(struct pdf *pdf, FILE *stream)
 {
 	struct pdf_ctx ctx = {0};
 	char *p;
-	int ret = 1, version, xref_pos;
+	int xref_pos;
 	struct pdf_obj_dict trailer = {0};
 	struct pdf_obj *obj;
 
-	if (pdf->xref_tbl || pdf->xref_tbl_sz) {
-		PDF_LOG("pdf struct data not zero-d\n");
-		return 1;
-	}
+	PDF_ERRIF(pdf->xref_tbl || pdf->xref_tbl_sz, 1,
+	          "pdf struct data not zero-d\n");
 
-	ctx.fp = fopen(fname, "rb");
-	if (!ctx.fp) {
-		PDF_LOG("failed to open file '%s'\n", fname);
-		return 1;
-	}
+	ctx.fp = stream;
 
 	pdf__readline(&ctx);
-	if (ctx.ln_sz != 8 || strncmp(ctx.buf, "%PDF-1.", 7)) {
-		PDF_LOG("invalid header line\n");
-		goto close;
-	}
+	if (ctx.ln_sz != 8 || strncmp(ctx.buf, "%PDF-1.", 7))
+		PDF_ERR(1, "invalid header line\n");
 
-	version = atoi(ctx.buf+7);
-	if (version <= 0 || version > 7) {
-		PDF_LOG("invalid PDF version '%d'\n", version);
-		goto close;
-	}
-	pdf->version = version;
+	pdf->version = atoi(ctx.buf+7);
+	if (pdf->version > 7)
+		PDF_ERR(1, "invalid PDF version '%u'\n", pdf->version);
 
-	if (fseek(ctx.fp, -6, SEEK_END)) {
-		PDF_LOG("failed to lookup EOF comment\n");
-		goto close;
-	}
+	if (fseek(ctx.fp, -6, SEEK_END))
+		PDF_ERR(1, "failed to lookup EOF comment\n");
 
 	pdf__readline(&ctx);
-	if (ctx.ln_sz != 5 || strcmp(ctx.buf, "%%EOF")) {
-		PDF_LOG("invalid EOF comment\n");
-		goto close;
-	}
+	if (ctx.ln_sz != 5 || strcmp(ctx.buf, "%%EOF"))
+		PDF_ERR(1, "invalid EOF comment\n");
 
-	if (fseek(ctx.fp, -20, SEEK_CUR)) {
-		PDF_LOG("failed to lookup xref table position\n");
-		goto close;
-	}
+	if (fseek(ctx.fp, -20, SEEK_CUR))
+		PDF_ERR(1, "failed to lookup xref table position\n");
 	ctx.ln_sz = fread(ctx.buf, 1, 256, ctx.fp);
 	p = strstr(ctx.buf, "startxref");
-	if (!p) {
-		PDF_LOG("failed to locate xref table position\n");
-		goto close;
-	}
+	PDF_ERRIF(!p, 1, "failed to locate xref table position\n");
 	xref_pos = atoi(p+9);
-	if (!xref_pos) {
-		PDF_LOG("failed to parse xref table position\n");
-		goto close;
-	}
+	PDF_ERRIF(!xref_pos, 1, "failed to parse xref table position\n");
 
-	if (fseek(ctx.fp, xref_pos, SEEK_SET)) {
-		PDF_LOG("failed to lookup xref table\n");
-		goto close;
-	}
+	if (fseek(ctx.fp, xref_pos, SEEK_SET))
+		PDF_ERR(1, "failed to lookup xref table\n");
 
 	pdf__readline(&ctx);
-	if (strcmp(ctx.buf, "xref")) {
-		PDF_LOG("xref table not found in assigned location\n");
-		goto close;
-	}
+	if (strcmp(ctx.buf, "xref"))
+		PDF_ERR(1, "xref table not found in assigned location\n");
 
 	pdf__readline(&ctx);
 	while (!strstr(ctx.buf, "trailer")) {
 		unsigned short objnum, cnt;
-		if (pdf__parse_ushort_pair(ctx.buf, &objnum, &cnt)) {
-			PDF_LOG("failed to parse xref table section header\n");
-			goto close;
-		}
-		if (cnt == 0) {
-			PDF_LOG("xref table section has 0 objects\n");
-			goto close;
-		}
+		if (pdf__parse_ushort_pair(ctx.buf, &objnum, &cnt))
+			PDF_ERR(1, "failed to parse xref table section header\n");
+		PDF_ERRIF(cnt == 0, 1, "xref table section has 0 objects\n");
 
 		// The first object is always a NULL object, so skip it
 		if (!pdf->xref_tbl_sz) {
@@ -407,10 +367,8 @@ AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname)
 			unsigned off, gen;
 			char in_use, eol[2];
 			pdf__readline(&ctx);
-			if (sscanf(ctx.buf, "%10u %5u %c%2c", &off, &gen, &in_use, eol) != 4) {
-				PDF_LOG("invalid xref table entry '%s'\n", ctx.buf);
-				goto close;
-			}
+			if (sscanf(ctx.buf, "%10u %5u %c%2c", &off, &gen, &in_use, eol) != 4)
+				PDF_ERR(1, "invalid xref table entry '%s'\n", ctx.buf);
 			entry->id.num = objnum + i;
 			entry->id.gen = gen;
 			entry->offset = off;
@@ -420,44 +378,35 @@ AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname)
 		pdf__readline(&ctx);
 	}
 
-	if (pdf->xref_tbl_sz < 4) {
-		PDF_LOG("too few (%lu) objects found in xref table\n", pdf->xref_tbl_sz);
-		goto close;
-	}
+	PDF_ERRIF(pdf->xref_tbl_sz < 4, 1,
+	          "too few (%lu) objects found in xref table\n",
+	          pdf->xref_tbl_sz);
 
-	if (pdf__parse_dict(&ctx, &trailer)) {
-		PDF_LOG("failed to parse trailer\n");
-		goto close;
-	}
+	if (pdf__parse_dict(&ctx, &trailer))
+		PDF_ERR(1, "failed to parse trailer\n");
 	obj = pdf_dict_find(&trailer, "Root");
-	if (!obj) {
-		PDF_LOG("trailer dict has no Root entry\n");
-		goto close;
-	}
-	if (obj->type != PDF_OBJ_REF) {
-		PDF_LOG("trailer dict Root entry is not a ref\n");
-		goto close;
-	}
+	PDF_ERRIF(!obj, 1, "trailer dict has no Root entry\n");
+	PDF_ERRIF(obj->type != PDF_OBJ_REF, 1,
+	          "trailer dict Root entry is not a ref\n");
 	pdf->root = obj->ref.id;
 	obj = pdf_dict_find(&trailer, "Size");
-	if (!obj) {
-		PDF_LOG("trailer dict has no Size entry\n");
-		goto close;
-	}
-	if (obj->type != PDF_OBJ_INT) {
-		PDF_LOG("trailer dict Size entry is not an integer\n");
-		goto close;
-	}
-	if (obj->intg.val != pdf->xref_tbl_sz+1) {
-		PDF_LOG("trailer dict Size (%d) != xref table size (%lu)\n",
+	PDF_ERRIF(!obj, 1, "trailer dict has no Size entry\n");
+	PDF_ERRIF(obj->type != PDF_OBJ_INT, 1,
+	          "trailer dict Size entry is not an integer\n");
+	PDF_ERRIF(obj->intg.val != pdf->xref_tbl_sz+1, 1,
+	          "trailer dict Size (%d) != xref table size (%lu)\n",
 		        obj->intg.val, pdf->xref_tbl_sz+1);
-		goto close;
-	}
 
-	ret = 0;
+	return 0;
+}
 
-close:
-	fclose(ctx.fp);
+AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname)
+{
+	int ret;
+	FILE *fp = fopen(fname, "rb");
+	PDF_ERRIF(!fp, 1, "failed to open file '%s'\n", fname);
+	ret = pdf_init_from_stream(pdf, fp);
+	fclose(fp);
 	return ret;
 }
 
