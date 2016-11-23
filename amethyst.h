@@ -160,31 +160,57 @@ AMFDEF struct pdf_obj *pdf_dict_find_deref(struct pdf *pdf,
 AMFDEF void pdf_free(struct pdf *pdf);
 
 /*
- * PostScript callbacks
+ * PostScript data types
  */
 
-static void ps__show_txt(const char *str);
-static void ps__set_font(const char *name, int sz);
-static void ps__move_txt(float x, float y);
+#define PS_ERR     -1
+#define PS_OK       0
+#define PS_META_CMD 1
+#define PS_END      2
 
-#ifndef PS_SHOW_TXT
-#define PS_SHOW_TXT ps__show_txt
-#endif
+enum ps_cmd_type
+{
+	PS_CMD_MOVE_TEXT,
+	PS_CMD_SET_FONT,
+	PS_CMD_SHOW_TEXT,
+};
 
-#ifndef PS_SET_FONT
-#define PS_SET_FONT ps__set_font
-#endif
+struct ps_cmd
+{
+	enum ps_cmd_type type;
+	union
+	{
+		struct { float x, y; }               move_text;
+		struct { const char *font; int sz; } set_font;
+		struct { const char *str; }          show_text;
+	};
+};
 
-#ifndef PS_MOVE_TXT
-#define PS_MOVE_TXT ps__move_txt
-#endif
+struct ps__arg;
+struct ps__arg_arr
+{
+	struct ps__arg *entries;
+	size_t sz;
+	struct ps__arg_arr* parent;
+};
+
+struct ps_ctx
+{
+	struct ps__arg_arr args;
+	char *stream;
+	int (*next_cmd)(struct ps_ctx *ctx, struct ps_cmd *cmd);
+};
 
 /*
  * PostScript public functions
+ *
+ * For perfomance reasons, the parser modifies the postscript command
+ * string. However, it will restore the original string after commands
+ * are processed.
  */
 
-/* Modifiable for performance - reverts any modifications it makes */
-AMFDEF int pdf_ps_exec(char *stream);
+AMFDEF void ps_init(struct ps_ctx *ctx, char *str);
+AMFDEF int ps_exec(struct ps_ctx *ctx, struct ps_cmd *cmd);
 
 #ifdef __cplusplus
 }
@@ -1087,6 +1113,17 @@ AMFDEF void pdf_free(struct pdf *pdf)
  * Postscript parser implementation
  */
 
+static int ps__next_base_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd);
+
+AMFDEF void ps_init(struct ps_ctx *ctx, char *str)
+{
+	ctx->stream = str;
+	ctx->args.sz = 0;
+	ctx->args.entries = NULL;
+	ctx->args.parent = NULL;
+	ctx->next_cmd = ps__next_base_cmd;
+}
+
 enum ps__argtype
 {
 	PS_ARG_ARR,
@@ -1095,16 +1132,9 @@ enum ps__argtype
 	PS_ARG_STR,
 };
 
-struct ps__arg_arr
-{
-	struct ps__arg *entries;
-	size_t sz;
-	struct ps__arg_arr* parent;
-};
-
 struct ps__arg_scalar
 {
-	char *start, *end;
+	char *start, *end, replacement;
 };
 
 struct ps__arg
@@ -1117,19 +1147,26 @@ struct ps__arg
 	};
 };
 
-enum ps__txt_cmd
-{
-	PS_TXT_CMD_END,
-	PS_TXT_CMD_EOS,
-	PS_TXT_CMD_INVALID,
-	PS_TXT_CMD_MOVE,
-	PS_TXT_CMD_FONT,
-	PS_TXT_CMD_SHOW,
-};
-
 static void ps__consume_ws(char **stream)
 {
 	while (isspace(**stream) && **stream != '\0')
+		++*stream;
+}
+
+static void ps__consume_name(char **stream)
+{
+	while (   !isspace(**stream)
+	       && **stream != '('
+	       && **stream != ')'
+	       && **stream != '<'
+	       && **stream != '>'
+	       && **stream != '['
+	       && **stream != ']'
+	       && **stream != '{'
+	       && **stream != '}'
+	       && **stream != '/'
+	       && **stream != '%'
+	       && **stream != '\0')
 		++*stream;
 }
 
@@ -1152,207 +1189,177 @@ static int ps__consume_to(char **stream, char c)
 	return **stream == '\0';
 }
 
-static int ps__txt_next_cmd(char **stream, struct ps__arg_arr *args)
+static struct ps__arg *ps__arg_arr_grow(struct ps__arg_arr *args)
 {
-	struct ps__arg_arr *cur_arr = args;
+	++args->sz;
+	args->entries = PDF_REALLOC(args->entries,
+	                            args->sz*sizeof(struct ps__arg));
+	return args->entries + args->sz - 1;
+}
+
+static int ps__next_text_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd)
+{
+	struct ps__arg_arr *args = &ctx->args;
+	struct ps__arg *arg;
 	while (1) {
-		ps__consume_ws(stream);
-		if (**stream == '/') {
-			struct ps__arg *arg;
-			++cur_arr->sz;
-			cur_arr->entries = PDF_REALLOC(cur_arr->entries,
-			                               cur_arr->sz*sizeof(struct ps__arg));
-			arg = cur_arr->entries + cur_arr->sz - 1;
+		ps__consume_ws(&ctx->stream);
+		if (*ctx->stream == '/') {
+			arg = ps__arg_arr_grow(args);
 			arg->type = PS_ARG_NAME;
-			arg->val.start = *stream;
-			ps__consume_word(stream);
-			arg->val.end = *stream;
-		} else if (**stream >= '0' && **stream <= '9') {
-			struct ps__arg *arg;
-			++cur_arr->sz;
-			cur_arr->entries = PDF_REALLOC(cur_arr->entries,
-			                               cur_arr->sz*sizeof(struct ps__arg));
-			arg = cur_arr->entries + cur_arr->sz - 1;
+			++ctx->stream;
+			arg->val.start = ctx->stream;
+			ps__consume_name(&ctx->stream);
+			arg->val.end = ctx->stream;
+		} else if (*ctx->stream >= '0' && *ctx->stream <= '9') {
+			arg = ps__arg_arr_grow(args);
 			arg->type = PS_ARG_REAL;
-			arg->val.start = *stream;
-			ps__consume_digits(stream);
-			arg->val.end = *stream;
-		} else if (**stream == '(') {
-			struct ps__arg *arg;
-			++cur_arr->sz;
-			cur_arr->entries = PDF_REALLOC(cur_arr->entries,
-			                               cur_arr->sz*sizeof(struct ps__arg));
-			arg = cur_arr->entries + cur_arr->sz - 1;
+			arg->val.start = ctx->stream;
+			ps__consume_digits(&ctx->stream);
+			arg->val.end = ctx->stream;
+		} else if (*ctx->stream == '(') {
+			arg = ps__arg_arr_grow(args);
 			arg->type = PS_ARG_STR;
-			arg->val.start = ++*stream;
-			if (ps__consume_to(stream, ')'))
-				PDF_ERR(PS_TXT_CMD_INVALID, "Unterminated text string\n");
-			arg->val.end = *stream;
-			++*stream;
-		} else if (**stream == '[') {
-			struct ps__arg *arg;
-			++cur_arr->sz;
-			cur_arr->entries = PDF_REALLOC(cur_arr->entries,
-			                               cur_arr->sz*sizeof(struct ps__arg));
-			arg = cur_arr->entries + cur_arr->sz - 1;
+			arg->val.start = ++ctx->stream;
+			if (ps__consume_to(&ctx->stream, ')'))
+				PDF_ERR(PS_ERR, "Unterminated text string\n");
+			arg->val.end = ctx->stream;
+			++ctx->stream;
+		} else if (*ctx->stream == '[') {
+			arg = ps__arg_arr_grow(args);
 			arg->type = PS_ARG_ARR;
 			arg->arr.entries = NULL;
 			arg->arr.sz = 0;
-			arg->arr.parent = cur_arr;
-			cur_arr = &arg->arr;
-		} else if (**stream == ']') {
-			cur_arr = cur_arr->parent;
-			PDF_ERRIF(!cur_arr, PS_TXT_CMD_INVALID,
-			          "Unexpected end of array text token\n");
+			arg->arr.parent = args;
+			args = &arg->arr;
+		} else if (*ctx->stream == ']') {
+			args = args->parent;
+			PDF_ERRIF(!args, PS_ERR, "Unexpected end of array text token\n");
 		} else {
-			const char *start = *stream;
-			ps__consume_word(stream);
-			if (*stream - start == 2 && strncmp(start, "Td", 2) == 0)
-				return PS_TXT_CMD_MOVE;
-			else if (*stream - start == 2 && strncmp(start, "Tf", 2) == 0)
-				return PS_TXT_CMD_FONT;
-			else if (*stream - start == 2 && strncmp(start, "Tj", 2) == 0)
-				return PS_TXT_CMD_SHOW;
-			else if (*stream - start == 2 && strncmp(start, "ET", 2) == 0)
-				return PS_TXT_CMD_END;
-			else if (*stream == '\0')
-				return PS_TXT_CMD_EOS;
-			PDF_ERR(PS_TXT_CMD_INVALID, "Unknown command '%.*s'\n",
-			        (int)(*stream - start), start);
+			const char *start = ctx->stream;
+			ps__consume_word(&ctx->stream);
+			if (ctx->stream - start == 2 && strncmp(start, "Td", 2) == 0)
+				cmd->type = PS_CMD_MOVE_TEXT;
+			else if (ctx->stream - start == 2 && strncmp(start, "Tf", 2) == 0)
+				cmd->type = PS_CMD_SET_FONT;
+			else if (ctx->stream - start == 2 && strncmp(start, "Tj", 2) == 0)
+				cmd->type =  PS_CMD_SHOW_TEXT;
+			else if (ctx->stream - start == 2 && strncmp(start, "ET", 2) == 0) {
+				ctx->next_cmd = ps__next_base_cmd;
+				return PS_META_CMD;
+			} else if (ctx->stream == '\0')
+				return PS_END;
+			else 
+				PDF_ERR(PS_ERR, "Unknown text command '%.*s'\n",
+				        (int)(ctx->stream - start), start);
+			return PS_OK;
 		}
 	}
 }
 
-static int ps__txt_begin(char **stream)
-{
-	struct ps__arg_arr args = {0};
-	int err = 0, quit = 0;
-	char c, d;
-
-	while (!quit) {
-		switch (ps__txt_next_cmd(stream, &args)) {
-		case PS_TXT_CMD_END:
-			quit = 1;
-		break;
-		case PS_TXT_CMD_EOS:
-			err = quit = 1;
-			PDF_LOG("Unexpected end of text stream\n");
-		break;
-		case PS_TXT_CMD_FONT:
-			if (   args.sz == 2
-			    && args.entries[0].type == PS_ARG_NAME
-			    && args.entries[1].type == PS_ARG_REAL) {
-				c = *args.entries[0].val.end;
-				*args.entries[0].val.end = '\0';
-				d = *args.entries[1].val.end;
-				*args.entries[1].val.end = '\0';
-				PS_SET_FONT(args.entries[0].val.start,
-				            atoi(args.entries[1].val.start));
-				*args.entries[0].val.end = c;
-				*args.entries[1].val.end = d;
-				args.sz = 0;
-			} else {
-				PDF_LOG("Set font cmd called with incorrect params\n");
-				err = quit = 1;
-			}
-		break;
-		case PS_TXT_CMD_INVALID:
-			err = quit = 1;
-			PDF_LOG("Error while reading ps text stream\n");
-		break;
-		case PS_TXT_CMD_MOVE:
-			if (   args.sz == 2
-			    && args.entries[0].type == PS_ARG_REAL
-			    && args.entries[1].type == PS_ARG_REAL) {
-				c = *args.entries[0].val.end;
-				*args.entries[0].val.end = '\0';
-				d = *args.entries[1].val.end;
-				*args.entries[1].val.end = '\0';
-				PS_MOVE_TXT(strtof(args.entries[0].val.start, NULL),
-				            strtof(args.entries[1].val.start, NULL));
-				*args.entries[0].val.end = c;
-				*args.entries[1].val.end = d;
-				args.sz = 0;
-			} else {
-				PDF_LOG("Set font cmd called with incorrect params\n");
-				err = quit = 1;
-			}
-		break;
-		case PS_TXT_CMD_SHOW:
-			if (args.sz == 1 && args.entries[0].type == PS_ARG_STR) {
-				c = *args.entries[0].val.end;
-				*args.entries[0].val.end = '\0';
-				PS_SHOW_TXT(args.entries[0].val.start);
-				*args.entries[0].val.end = c;
-				args.sz = 0;
-			} else {
-				PDF_LOG("Show text cmd called with incorrect params\n");
-				err = quit = 1;
-			}
-		break;
-		}
-	}
-	PDF_FREE(args.entries);
-	return err;
-}
-
-enum ps__cmd
-{
-	PS_CMD_END,
-	PS_CMD_INVALID,
-	PS_CMD_TXT_BEGIN,
-};
-
-static enum ps__cmd ps__next_cmd(char **stream)
+static int ps__next_base_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd)
 {
 	const char *start;
-	ps__consume_ws(stream);
-	start = *stream;
-	ps__consume_word(stream);
-	if (*stream - start == 2 && strncmp(start, "BT", 2) == 0)
-		return PS_CMD_TXT_BEGIN;
-	if (**stream == '\0')
-		return PS_CMD_END;
-	PDF_LOG("Invalid cmd token '%.*s'\n", (int)(*stream - start), start);
-	return PS_CMD_INVALID;
+	ps__consume_ws(&ctx->stream);
+	start = ctx->stream;
+	ps__consume_word(&ctx->stream);
+	if (ctx->stream - start == 2 && strncmp(start, "BT", 2) == 0) {
+		ctx->next_cmd = ps__next_text_cmd;
+		return PS_META_CMD;
+	}
+	if (*ctx->stream == '\0')
+		return PS_END;
+	PDF_LOG("Unknown base command '%.*s'\n", (int)(ctx->stream - start),
+	        start);
+	return PS_ERR;
 }
 
-AMFDEF int pdf_ps_exec(char *str)
+static void ps__free_arg_arr(struct ps__arg_arr *arr)
 {
-	char **stream = &str;
-	int err = 0, quit = 0;
-
-	while (!quit) {
-		switch (ps__next_cmd(stream)) {
-		case PS_CMD_END:
-			quit = 1;
+	for (size_t i = 0; i < arr->sz; ++i) {
+		switch (arr->entries[i].type) {
+		case PS_ARG_ARR:
+			ps__free_arg_arr(&arr->entries[i].arr);
 		break;
-		case PS_CMD_TXT_BEGIN:
-			if (ps__txt_begin(stream))
-				err = quit = 1;
-		break;
-		case PS_CMD_INVALID:
-			err = quit = 1;
-			PDF_LOG("Error while reading ps stream\n");
+		case PS_ARG_NAME:
+		case PS_ARG_REAL:
+		case PS_ARG_STR:
+			*arr->entries[i].val.end = arr->entries[i].val.replacement;
 		break;
 		}
 	}
-	return err;
+	PDF_FREE(arr->entries);
+	arr->entries = NULL;
+	arr->sz = 0;
 }
 
-static void ps__show_txt(const char *txt)
+static void ps__replace_arg_ends(struct ps__arg_arr *arr)
 {
-	PDF_LOG("txt: %s\n", txt);
+	for (size_t i = 0; i < arr->sz; ++i) {
+		switch (arr->entries[i].type) {
+		case PS_ARG_ARR:
+			ps__replace_arg_ends(&arr->entries[i].arr);
+		break;
+		case PS_ARG_NAME:
+		case PS_ARG_REAL:
+		case PS_ARG_STR:
+			arr->entries[i].val.replacement = *arr->entries[i].val.end;
+			*arr->entries[i].val.end = '\0';
+		break;
+		}
+	}
 }
 
-static void ps__set_font(const char *name, int sz)
+static int ps__assign_cmd_args(struct ps__arg_arr *args,
+                               struct ps_cmd *cmd)
 {
-	PDF_LOG("Ignoring set font (%s, %d) command\n", name, sz);
+	switch (cmd->type) {
+	case PS_CMD_MOVE_TEXT:
+		PDF_ERRIF(!(   !args->parent
+		            && args->sz == 2
+		            && args->entries[0].type == PS_ARG_REAL
+		            && args->entries[1].type == PS_ARG_REAL),
+		          PS_ERR, "Move text cmd called with incorrect params\n");
+		cmd->move_text.x = strtof(args->entries[0].val.start, NULL);
+		cmd->move_text.x = strtof(args->entries[1].val.start, NULL);
+	break;
+	case PS_CMD_SET_FONT:
+		PDF_ERRIF(!(   !args->parent
+		            && args->sz == 2
+		            && args->entries[0].type == PS_ARG_NAME
+		            && args->entries[1].type == PS_ARG_REAL),
+		          PS_ERR, "Set font cmd called with incorrect params\n");
+		cmd->set_font.font = args->entries[0].val.start;
+		cmd->set_font.sz = atoi(args->entries[1].val.start);
+	break;
+	case PS_CMD_SHOW_TEXT:
+		PDF_ERRIF(!(   !args->parent
+		            && args->sz == 1
+		            && args->entries[0].type == PS_ARG_STR),
+		          PS_ERR, "Show text cmd called with incorrect params\n");
+		cmd->show_text.str = args->entries[0].val.start;
+	break;
+	}
+	return PS_OK;
 }
 
-static void ps__move_txt(float x, float y)
+AMFDEF int ps_exec(struct ps_ctx *ctx, struct ps_cmd *cmd)
 {
-	PDF_LOG("Ignoring text move (%f, %f) command\n", x, y);
+	int ret = PS_META_CMD;
+
+	if (ctx->args.sz)
+		ps__free_arg_arr(&ctx->args);
+
+	while (ret == PS_META_CMD)
+		ret = ctx->next_cmd(ctx, cmd);
+
+	if (ret == PS_OK) {
+		ps__replace_arg_ends(&ctx->args);
+		ret = ps__assign_cmd_args(&ctx->args, cmd);
+	}
+	if (ret == PS_ERR || ret == PS_END)
+		ps__free_arg_arr(&ctx->args);
+
+	return ret;
 }
 
 #endif // AMETHYST_IMPLEMENTATION

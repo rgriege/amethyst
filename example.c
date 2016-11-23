@@ -4,10 +4,25 @@
 int obj_draw(struct pdf *pdf, struct pdf_objid id)
 {
 	struct pdf_baseobj *contents = pdf_get_baseobj(pdf, id);
+	struct ps_ctx ctx = {0};
+	struct ps_cmd cmd;
 	PDF_ERRIF(!contents, -1,
 	          "failed to retrive Page Contents base object\n");
 	PDF_ERRIF(!contents->stream, -1, "Page Contents has no stream\n");
-	pdf_ps_exec(contents->stream);
+	ps_init(&ctx, contents->stream);
+	while (ps_exec(&ctx, &cmd) == PS_OK) {
+		switch (cmd.type) {
+		case PS_CMD_SHOW_TEXT:
+			PDF_LOG("txt: %s\n", cmd.show_text.str);
+		break;
+		case PS_CMD_SET_FONT:
+			PDF_LOG("Set font (%s, %d)\n", cmd.set_font.font, cmd.set_font.sz);
+		break;
+		case PS_CMD_MOVE_TEXT:
+			PDF_LOG("Text move (%f, %f)\n", cmd.move_text.x, cmd.move_text.y);
+		break;
+		}
+	}
 	return 0;
 }
 
