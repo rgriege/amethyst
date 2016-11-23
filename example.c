@@ -11,15 +11,25 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id)
 	PDF_ERRIF(!contents->stream, -1, "Page Contents has no stream\n");
 	ps_init(&ctx, contents->stream);
 	while (ps_exec(&ctx, &cmd) == PS_OK) {
+		PDF_LOG("%s", ps_cmd_names[cmd.type]);
 		switch (cmd.type) {
 		case PS_CMD_SHOW_TEXT:
-			PDF_LOG("txt: %s\n", cmd.show_text.str);
+			PDF_LOG(" (%s)\n", cmd.show_text.str);
+		break;
+		case PS_CMD_SET_COLOR_CMYK:
+			PDF_LOG(" (%f %f %f %f)\n", cmd.set_color_cmyk.c,
+			        cmd.set_color_cmyk.m, cmd.set_color_cmyk.y,
+			        cmd.set_color_cmyk.k);
 		break;
 		case PS_CMD_SET_FONT:
-			PDF_LOG("Set font (%s, %d)\n", cmd.set_font.font, cmd.set_font.sz);
+			PDF_LOG(" (%s, %d)\n", cmd.set_font.font, cmd.set_font.sz);
 		break;
 		case PS_CMD_MOVE_TEXT:
-			PDF_LOG("Text move (%f, %f)\n", cmd.move_text.x, cmd.move_text.y);
+			PDF_LOG(" (%f, %f)\n", cmd.move_text.x, cmd.move_text.y);
+		break;
+		case PS_CMD_RESTORE_STATE:
+		case PS_CMD_SAVE_STATE:
+			PDF_LOG("\n");
 		break;
 		}
 	}

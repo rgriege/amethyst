@@ -171,6 +171,9 @@ AMFDEF void pdf_free(struct pdf *pdf);
 enum ps_cmd_type
 {
 	PS_CMD_MOVE_TEXT,
+	PS_CMD_RESTORE_STATE,
+	PS_CMD_SAVE_STATE,
+	PS_CMD_SET_COLOR_CMYK,
 	PS_CMD_SET_FONT,
 	PS_CMD_SHOW_TEXT,
 };
@@ -181,10 +184,13 @@ struct ps_cmd
 	union
 	{
 		struct { float x, y; }               move_text;
+		struct { float c, m, y, k; }         set_color_cmyk;
 		struct { const char *font; int sz; } set_font;
 		struct { const char *str; }          show_text;
 	};
 };
+
+AMFDEF const char *ps_cmd_names[];
 
 struct ps__arg;
 struct ps__arg_arr
@@ -1113,6 +1119,15 @@ AMFDEF void pdf_free(struct pdf *pdf)
  * Postscript parser implementation
  */
 
+const char *ps_cmd_names[] = {
+	"Move text",
+	"Restore state",
+	"Save state",
+	"Set color cmyk",
+	"Set font",
+	"Show font",
+};
+
 static int ps__next_base_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd);
 
 AMFDEF void ps_init(struct ps_ctx *ctx, char *str)
@@ -1197,7 +1212,7 @@ static struct ps__arg *ps__arg_arr_grow(struct ps__arg_arr *args)
 	return args->entries + args->sz - 1;
 }
 
-static int ps__next_text_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd)
+static int ps__parse_args(struct ps_ctx *ctx)
 {
 	struct ps__arg_arr *args = &ctx->args;
 	struct ps__arg *arg;
@@ -1234,37 +1249,66 @@ static int ps__next_text_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd)
 		} else if (*ctx->stream == ']') {
 			args = args->parent;
 			PDF_ERRIF(!args, PS_ERR, "Unexpected end of array text token\n");
-		} else {
-			const char *start = ctx->stream;
-			ps__consume_word(&ctx->stream);
-			if (ctx->stream - start == 2 && strncmp(start, "Td", 2) == 0)
-				cmd->type = PS_CMD_MOVE_TEXT;
-			else if (ctx->stream - start == 2 && strncmp(start, "Tf", 2) == 0)
-				cmd->type = PS_CMD_SET_FONT;
-			else if (ctx->stream - start == 2 && strncmp(start, "Tj", 2) == 0)
-				cmd->type =  PS_CMD_SHOW_TEXT;
-			else if (ctx->stream - start == 2 && strncmp(start, "ET", 2) == 0) {
-				ctx->next_cmd = ps__next_base_cmd;
-				return PS_META_CMD;
-			} else if (ctx->stream == '\0')
-				return PS_END;
-			else 
-				PDF_ERR(PS_ERR, "Unknown text command '%.*s'\n",
-				        (int)(ctx->stream - start), start);
+		} else if (args->parent)
+			PDF_ERR(PS_ERR, "Unterminated array\n")
+		else if (ctx->stream == '\0')
+			return PS_END;
+		else
 			return PS_OK;
-		}
 	}
+}
+
+static int ps__next_text_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd)
+{
+	int ret;
+	const char *start;
+
+	ret = ps__parse_args(ctx);
+	if (ret != PS_OK)
+		return ret;
+
+	start = ctx->stream;
+	ps__consume_word(&ctx->stream);
+	if (ctx->stream - start == 2 && strncmp(start, "Td", 2) == 0)
+		cmd->type = PS_CMD_MOVE_TEXT;
+	else if (ctx->stream - start == 2 && strncmp(start, "Tf", 2) == 0)
+		cmd->type = PS_CMD_SET_FONT;
+	else if (ctx->stream - start == 2 && strncmp(start, "Tj", 2) == 0)
+		cmd->type =  PS_CMD_SHOW_TEXT;
+	else if (ctx->stream - start == 2 && strncmp(start, "ET", 2) == 0) {
+		ctx->next_cmd = ps__next_base_cmd;
+		return PS_META_CMD;
+	} else if (ctx->stream == '\0')
+		return PS_END;
+	else
+		PDF_ERR(PS_ERR, "Unknown text command '%.*s'\n",
+		        (int)(ctx->stream - start), start);
+	return PS_OK;
 }
 
 static int ps__next_base_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd)
 {
+	int ret;
 	const char *start;
-	ps__consume_ws(&ctx->stream);
+
+	ret = ps__parse_args(ctx);
+	if (ret != PS_OK)
+		return ret;
+
 	start = ctx->stream;
 	ps__consume_word(&ctx->stream);
 	if (ctx->stream - start == 2 && strncmp(start, "BT", 2) == 0) {
 		ctx->next_cmd = ps__next_text_cmd;
 		return PS_META_CMD;
+	} else if (ctx->stream - start == 1 && *start == 'q') {
+		cmd->type = PS_CMD_SAVE_STATE;
+		return PS_OK;
+	} else if (ctx->stream - start == 1 && *start == 'Q') {
+		cmd->type = PS_CMD_RESTORE_STATE;
+		return PS_OK;
+	} else if (ctx->stream - start == 1 && *start == 'k') {
+		cmd->type = PS_CMD_SET_COLOR_CMYK;
+		return PS_OK;
 	}
 	if (*ctx->stream == '\0')
 		return PS_END;
@@ -1318,16 +1362,32 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		            && args->sz == 2
 		            && args->entries[0].type == PS_ARG_REAL
 		            && args->entries[1].type == PS_ARG_REAL),
-		          PS_ERR, "Move text cmd called with incorrect params\n");
+		          PS_ERR, "%s called with incorrect params\n",
+		          ps_cmd_names[cmd->type]);
 		cmd->move_text.x = strtof(args->entries[0].val.start, NULL);
 		cmd->move_text.x = strtof(args->entries[1].val.start, NULL);
+	break;
+	case PS_CMD_SET_COLOR_CMYK:
+		PDF_ERRIF(!(   !args->parent
+		            && args->sz == 4
+		            && args->entries[0].type == PS_ARG_REAL
+		            && args->entries[1].type == PS_ARG_REAL
+		            && args->entries[2].type == PS_ARG_REAL
+		            && args->entries[3].type == PS_ARG_REAL),
+		          PS_ERR, "%s called with incorrect params\n",
+		          ps_cmd_names[cmd->type]);
+		cmd->set_color_cmyk.c = strtof(args->entries[0].val.start, NULL);
+		cmd->set_color_cmyk.m = strtof(args->entries[1].val.start, NULL);
+		cmd->set_color_cmyk.y = strtof(args->entries[2].val.start, NULL);
+		cmd->set_color_cmyk.k = strtof(args->entries[3].val.start, NULL);
 	break;
 	case PS_CMD_SET_FONT:
 		PDF_ERRIF(!(   !args->parent
 		            && args->sz == 2
 		            && args->entries[0].type == PS_ARG_NAME
 		            && args->entries[1].type == PS_ARG_REAL),
-		          PS_ERR, "Set font cmd called with incorrect params\n");
+		          PS_ERR, "%s called with incorrect params\n",
+		          ps_cmd_names[cmd->type]);
 		cmd->set_font.font = args->entries[0].val.start;
 		cmd->set_font.sz = atoi(args->entries[1].val.start);
 	break;
@@ -1335,8 +1395,15 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		PDF_ERRIF(!(   !args->parent
 		            && args->sz == 1
 		            && args->entries[0].type == PS_ARG_STR),
-		          PS_ERR, "Show text cmd called with incorrect params\n");
+		          PS_ERR, "%s called with incorrect params\n",
+		          ps_cmd_names[cmd->type]);
 		cmd->show_text.str = args->entries[0].val.start;
+	break;
+	case PS_CMD_RESTORE_STATE:
+	case PS_CMD_SAVE_STATE:
+		PDF_ERRIF(!(!args->parent && args->sz == 0),
+		          PS_ERR, "%s called with params when none expected\n",
+		          ps_cmd_names[cmd->type]);
 	break;
 	}
 	return PS_OK;
