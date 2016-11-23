@@ -170,6 +170,7 @@ AMFDEF void pdf_free(struct pdf *pdf);
 
 enum ps_cmd_type
 {
+	PS_CMD_DASH,
 	PS_CMD_FILL,
 	PS_CMD_FILL_CMYK,
 	PS_CMD_FILL_GRAY,
@@ -189,20 +190,25 @@ enum ps_cmd_type
 	PS_CMD_TRANSFORM,
 };
 
+#ifndef PS_DASH_SZ
+#define PS_DASH_SZ 5
+#endif
+
 struct ps_cmd
 {
 	enum ps_cmd_type type;
 	union
 	{
-		struct { float c, m, y, k; }          cmyk;
-		struct { float val; }                 gray;
-		struct { float val; }                 line_width;
-		struct { const char *name; }          obj;
-		struct { float x, y; }                pos;
-		struct { float x, y, width, height; } rectangle;
-		struct { const char *font; int sz; }  set_font;
-		struct { const char *str; }           show_text;
-		struct { float a, b, c, d, e, f; }    transform;
+		struct { float c, m, y, k; }           cmyk;
+		struct { int arr[PS_DASH_SZ], phase; } dash;
+		struct { float val; }                  gray;
+		struct { float val; }                  line_width;
+		struct { const char *name; }           obj;
+		struct { float x, y; }                 pos;
+		struct { float x, y, width, height; }  rectangle;
+		struct { const char *font; int sz; }   set_font;
+		struct { const char *str; }            show_text;
+		struct { float a, b, c, d, e, f; }     transform;
 	};
 };
 
@@ -1136,6 +1142,7 @@ AMFDEF void pdf_free(struct pdf *pdf)
  */
 
 const char *ps_cmd_names[] = {
+	"Dash",
 	"Fill",
 	"Fill cmyk",
 	"Fill gray",
@@ -1273,9 +1280,11 @@ static int ps__parse_args(struct ps_ctx *ctx)
 			arg->arr.sz = 0;
 			arg->arr.parent = args;
 			args = &arg->arr;
+			++ctx->stream;
 		} else if (*ctx->stream == ']') {
 			args = args->parent;
 			PDF_ERRIF(!args, PS_ERR, "Unexpected end of array text token\n");
+			++ctx->stream;
 		} else if (args->parent)
 			PDF_ERR(PS_ERR, "Unterminated array\n")
 		else if (ctx->stream == '\0')
@@ -1360,6 +1369,9 @@ static int ps__next_base_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd)
 	} else if (ctx->stream - start == 1 && *start == 'S') {
 		cmd->type = PS_CMD_STROKE;
 		return PS_OK;
+	} else if (ctx->stream - start == 1 && *start == 'd') {
+		cmd->type = PS_CMD_DASH;
+		return PS_OK;
 	} else if (   ctx->stream - start == 1
 	           && (*start == 'f' || *start == 'F')) {
 		cmd->type = PS_CMD_FILL;
@@ -1418,6 +1430,27 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
                                struct ps_cmd *cmd)
 {
 	switch (cmd->type) {
+	case PS_CMD_DASH:
+		PDF_ERRIF(!(   !args->parent
+		            && args->sz == 2
+		            && args->entries[0].type == PS_ARG_ARR
+		            && args->entries[1].type == PS_ARG_REAL),
+		          PS_ERR, "%s called with incorrect params\n",
+		          ps_cmd_names[cmd->type]);
+		PDF_ERRIF(args->entries[0].arr.sz > PS_DASH_SZ, PS_ERR,
+		          "%s array exceeds implementation limit\n",
+		          ps_cmd_names[cmd->type]);
+		for (size_t i = 0; i < args->entries[0].arr.sz; ++i) {
+			struct ps__arg *arg = args->entries[0].arr.entries+i;
+			PDF_ERRIF(arg->type != PS_ARG_REAL, PS_ERR,
+			          "%s array has non-real value\n",
+			          ps_cmd_names[cmd->type]);
+			cmd->dash.arr[i] = atoi(arg->val.start);
+		}
+		if (args->entries[0].arr.sz < PS_DASH_SZ)
+			cmd->dash.arr[args->entries[0].arr.sz] = -1;
+		cmd->dash.phase = atoi(args->entries[1].val.start);
+	break;
 	case PS_CMD_FILL_CMYK:
 	case PS_CMD_STROKE_CMYK:
 		PDF_ERRIF(!(   !args->parent

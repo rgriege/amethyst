@@ -15,6 +15,16 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id,
 	while (ps_exec(&ctx, &cmd) == PS_OK) {
 		PDF_LOG("%*s%s", 2*indent, "", ps_cmd_names[cmd.type]);
 		switch (cmd.type) {
+		case PS_CMD_DASH:
+			PDF_LOG(" ([");
+			for (int i = 0; i < PS_DASH_SZ; ++i) {
+				if (cmd.dash.arr[i] != -1)
+					PDF_LOG("%d ", cmd.dash.arr[i]);
+				else
+					break;
+			}
+			PDF_LOG("] %d) \n", cmd.dash.phase);
+		break;
 		case PS_CMD_FILL_CMYK:
 		case PS_CMD_STROKE_CMYK:
 			PDF_LOG(" (%f %f %f %f)\n", cmd.cmyk.c, cmd.cmyk.m, cmd.cmyk.y,
