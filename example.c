@@ -24,6 +24,13 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id,
 		case PS_CMD_STROKE_GRAY:
 			PDF_LOG(" (%f)\n", cmd.gray.val);
 		break;
+		case PS_CMD_LINE_TO:
+		case PS_CMD_MOVE_TO:
+			PDF_LOG(" (%f %f)\n", cmd.pos.x, cmd.pos.y);
+		break;
+		case PS_CMD_LINE_WIDTH:
+			PDF_LOG(" (%f)\n", cmd.line_width.val);
+		break;
 		case PS_CMD_OBJ:
 			PDF_ERRIF(!xobjects, -1, " (%s) no resources\n", cmd.obj.name);
 			xobj = pdf_dict_find(xobjects, cmd.obj.name);
@@ -45,7 +52,7 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id,
 			PDF_LOG(" (%s, %d)\n", cmd.set_font.font, cmd.set_font.sz);
 		break;
 		case PS_CMD_MOVE_TEXT:
-			PDF_LOG(" (%f, %f)\n", cmd.move_text.x, cmd.move_text.y);
+			PDF_LOG(" (%f, %f)\n", cmd.pos.x, cmd.pos.y);
 		break;
 		case PS_CMD_TRANSFORM:
 			PDF_LOG(" (%f %f %f %f %f %f)\n", cmd.transform.a,
@@ -55,6 +62,7 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id,
 		case PS_CMD_FILL:
 		case PS_CMD_RESTORE_STATE:
 		case PS_CMD_SAVE_STATE:
+		case PS_CMD_STROKE:
 			PDF_LOG("\n");
 		break;
 		}
