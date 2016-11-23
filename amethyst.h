@@ -194,9 +194,13 @@ AMFDEF int pdf_ps_exec(char *stream);
 
 #ifdef AMETHYST_IMPLEMENTATION
 
+#include <assert.h>
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef PDF_ZLIB
+#include <zlib.h>
+#endif
 
 #define PDF_ERR(code, ...) { PDF_LOG(__VA_ARGS__); return code; }
 #define PDF_ERRIF(cond, code, ...) \
@@ -781,6 +785,76 @@ AMFDEF int pdf_init_from_file(struct pdf *pdf, const char *fname)
 	return pdf_init_from_stream(pdf, fp);
 }
 
+#ifdef PDF_ZLIB
+/* Based on zlib zpipe.c example */
+#define PDF_ZLIB_CHUNK 1024
+static int pdf__zlib_inflate(char **stream, int len)
+{
+	int ret;
+	unsigned have;
+	z_stream strm;
+	unsigned char buf[PDF_ZLIB_CHUNK];
+	char *out = NULL;
+
+	if (len == 0)
+		return Z_OK;
+
+	/* allocate inflate state */
+	strm.zalloc = Z_NULL;
+	strm.zfree = Z_NULL;
+	strm.opaque = Z_NULL;
+	strm.avail_in = 0;
+	strm.next_in = Z_NULL;
+	ret = inflateInit(&strm);
+	if (ret != Z_OK)
+		return ret;
+
+	strm.avail_in = len;
+	strm.next_in = (unsigned char*)*stream;
+
+	/* run inflate() on input until output buffer not full */
+	do {
+		strm.avail_out = PDF_ZLIB_CHUNK;
+		strm.next_out = buf;
+		ret = inflate(&strm, Z_NO_FLUSH);
+		assert(ret != Z_STREAM_ERROR); /* state not clobbered */
+		switch (ret) {
+		case Z_NEED_DICT:
+			ret = Z_DATA_ERROR; /* and fall through */
+		case Z_DATA_ERROR:
+		case Z_MEM_ERROR:
+			(void)inflateEnd(&strm);
+			PDF_FREE(out);
+			return ret;
+		}
+		have = PDF_ZLIB_CHUNK - strm.avail_out;
+		out = PDF_REALLOC(out, have+1);
+		memcpy(out, buf, have);
+		out[have] = '\0';
+	} while (strm.avail_out == 0);
+
+	/* clean up and return */
+	(void)inflateEnd(&strm);
+	PDF_FREE(*stream);
+	*stream = out;
+	return Z_OK;
+}
+#endif
+
+static int pdf__decode_stream(char **stream, int len, const char *decoder)
+{
+#ifdef PDF_ZLIB
+	if (strcmp(decoder, "FlateDecode") == 0) {
+		int ret = pdf__zlib_inflate(stream, len);
+		if (ret != Z_OK)
+			PDF_LOG("zlib error (%d)\n", ret);
+		return ret;
+	}
+#endif
+	PDF_LOG("Filter '%s' not supported\n", decoder);
+	return 1;
+}
+
 AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 {
 	struct pdf_xref *xref_entry = NULL;
@@ -814,7 +888,7 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 		pdf__readline(pdf->ctx); // consume rest of line
 		pdf__readline(pdf->ctx);
 		if (strncmp(pdf->ctx->buf, "stream", 6) == 0) {
-			struct pdf_obj *obj = &xref_entry->baseobj->obj, *length;
+			struct pdf_obj *obj = &xref_entry->baseobj->obj, *length, *filter;
 			fpos_t pos;
 
 			PDF_ERRIF(fgetpos(pdf->ctx->fp, &pos), NULL,
@@ -832,6 +906,16 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 			fread(xref_entry->baseobj->stream, 1, length->intg.val,
 			      pdf->ctx->fp);
 			xref_entry->baseobj->stream[length->intg.val] = '\0';
+
+			filter = pdf_dict_find(&obj->dict, "Filter");
+			if (filter) {
+				PDF_ERRIF(filter->type != PDF_OBJ_NAME, NULL,
+				          "stream filter is not a name\n");
+				if (pdf__decode_stream(&xref_entry->baseobj->stream,
+				                       length->intg.val, filter->name.val))
+					PDF_ERR(NULL, "Failed to decode stream\n");
+			}
+
 			pdf__readline(pdf->ctx); // consume rest of line
 			pdf__readline(pdf->ctx);
 			PDF_ERRIF(strncmp(pdf->ctx->buf, "endstream", 9), NULL,
