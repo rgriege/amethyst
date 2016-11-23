@@ -15,6 +15,15 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id,
 	while (ps_exec(&ctx, &cmd) == PS_OK) {
 		PDF_LOG("%*s%s", 2*indent, "", ps_cmd_names[cmd.type]);
 		switch (cmd.type) {
+		case PS_CMD_FILL_CMYK:
+		case PS_CMD_STROKE_CMYK:
+			PDF_LOG(" (%f %f %f %f)\n", cmd.cmyk.c, cmd.cmyk.m, cmd.cmyk.y,
+			        cmd.cmyk.k);
+		break;
+		case PS_CMD_FILL_GRAY:
+		case PS_CMD_STROKE_GRAY:
+			PDF_LOG(" (%f)\n", cmd.gray.val);
+		break;
 		case PS_CMD_OBJ:
 			PDF_ERRIF(!xobjects, -1, " (%s) no resources\n", cmd.obj.name);
 			xobj = pdf_dict_find(xobjects, cmd.obj.name);
@@ -31,11 +40,6 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id,
 		break;
 		case PS_CMD_SHOW_TEXT:
 			PDF_LOG(" (%s)\n", cmd.show_text.str);
-		break;
-		case PS_CMD_SET_COLOR_CMYK:
-			PDF_LOG(" (%f %f %f %f)\n", cmd.set_color_cmyk.c,
-			        cmd.set_color_cmyk.m, cmd.set_color_cmyk.y,
-			        cmd.set_color_cmyk.k);
 		break;
 		case PS_CMD_SET_FONT:
 			PDF_LOG(" (%s, %d)\n", cmd.set_font.font, cmd.set_font.sz);

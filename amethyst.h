@@ -171,14 +171,17 @@ AMFDEF void pdf_free(struct pdf *pdf);
 enum ps_cmd_type
 {
 	PS_CMD_FILL,
+	PS_CMD_FILL_CMYK,
+	PS_CMD_FILL_GRAY,
 	PS_CMD_MOVE_TEXT,
 	PS_CMD_OBJ,
 	PS_CMD_RECTANGLE,
 	PS_CMD_RESTORE_STATE,
 	PS_CMD_SAVE_STATE,
-	PS_CMD_SET_COLOR_CMYK,
 	PS_CMD_SET_FONT,
 	PS_CMD_SHOW_TEXT,
+	PS_CMD_STROKE_CMYK,
+	PS_CMD_STROKE_GRAY,
 	PS_CMD_TRANSFORM,
 };
 
@@ -187,10 +190,11 @@ struct ps_cmd
 	enum ps_cmd_type type;
 	union
 	{
+		struct { float c, m, y, k; }          cmyk;
+		struct { float val; }                 gray;
 		struct { float x, y; }                move_text;
 		struct { const char *name; }          obj;
 		struct { float x, y, width, height; } rectangle;
-		struct { float c, m, y, k; }          set_color_cmyk;
 		struct { const char *font; int sz; }  set_font;
 		struct { const char *str; }           show_text;
 		struct { float a, b, c, d, e, f; }    transform;
@@ -1128,14 +1132,17 @@ AMFDEF void pdf_free(struct pdf *pdf)
 
 const char *ps_cmd_names[] = {
 	"Fill",
+	"Fill cmyk",
+	"Fill gray",
 	"Move text",
 	"Object",
 	"Rectangle",
 	"Restore state",
 	"Save state",
-	"Set color cmyk",
 	"Set font",
-	"Show font",
+	"Show text",
+	"Stroke cmyk",
+	"Stroke gray",
 	"Transform",
 };
 
@@ -1204,7 +1211,7 @@ static void ps__consume_word(char **stream)
 
 static void ps__consume_digits(char **stream)
 {
-	while (isdigit(**stream) && **stream != '\0')
+	while ((isdigit(**stream) || **stream == '.') && **stream != '\0')
 		++*stream;
 }
 
@@ -1318,7 +1325,16 @@ static int ps__next_base_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd)
 		cmd->type = PS_CMD_RESTORE_STATE;
 		return PS_OK;
 	} else if (ctx->stream - start == 1 && *start == 'k') {
-		cmd->type = PS_CMD_SET_COLOR_CMYK;
+		cmd->type = PS_CMD_FILL_CMYK;
+		return PS_OK;
+	} else if (ctx->stream - start == 1 && *start == 'K') {
+		cmd->type = PS_CMD_STROKE_CMYK;
+		return PS_OK;
+	} else if (ctx->stream - start == 1 && *start == 'g') {
+		cmd->type = PS_CMD_FILL_GRAY;
+		return PS_OK;
+	} else if (ctx->stream - start == 1 && *start == 'G') {
+		cmd->type = PS_CMD_STROKE_GRAY;
 		return PS_OK;
 	} else if (ctx->stream - start == 2 && strncmp(start, "re", 2) == 0) {
 		cmd->type = PS_CMD_RECTANGLE;
@@ -1381,6 +1397,30 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
                                struct ps_cmd *cmd)
 {
 	switch (cmd->type) {
+	case PS_CMD_FILL_CMYK:
+	case PS_CMD_STROKE_CMYK:
+		PDF_ERRIF(!(   !args->parent
+		            && args->sz == 4
+		            && args->entries[0].type == PS_ARG_REAL
+		            && args->entries[1].type == PS_ARG_REAL
+		            && args->entries[2].type == PS_ARG_REAL
+		            && args->entries[3].type == PS_ARG_REAL),
+		          PS_ERR, "%s called with incorrect params\n",
+		          ps_cmd_names[cmd->type]);
+		cmd->cmyk.c = strtof(args->entries[0].val.start, NULL);
+		cmd->cmyk.m = strtof(args->entries[1].val.start, NULL);
+		cmd->cmyk.y = strtof(args->entries[2].val.start, NULL);
+		cmd->cmyk.k = strtof(args->entries[3].val.start, NULL);
+	break;
+	case PS_CMD_FILL_GRAY:
+	case PS_CMD_STROKE_GRAY:
+		PDF_ERRIF(!(   !args->parent
+		            && args->sz == 1
+		            && args->entries[0].type == PS_ARG_REAL),
+		          PS_ERR, "%s called with incorrect params\n",
+		          ps_cmd_names[cmd->type]);
+		cmd->gray.val = strtof(args->entries[0].val.start, NULL);
+	break;
 	case PS_CMD_MOVE_TEXT:
 		PDF_ERRIF(!(   !args->parent
 		            && args->sz == 2
@@ -1412,20 +1452,6 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		cmd->rectangle.y = strtof(args->entries[1].val.start, NULL);
 		cmd->rectangle.width = strtof(args->entries[2].val.start, NULL);
 		cmd->rectangle.height = strtof(args->entries[3].val.start, NULL);
-	break;
-	case PS_CMD_SET_COLOR_CMYK:
-		PDF_ERRIF(!(   !args->parent
-		            && args->sz == 4
-		            && args->entries[0].type == PS_ARG_REAL
-		            && args->entries[1].type == PS_ARG_REAL
-		            && args->entries[2].type == PS_ARG_REAL
-		            && args->entries[3].type == PS_ARG_REAL),
-		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
-		cmd->set_color_cmyk.c = strtof(args->entries[0].val.start, NULL);
-		cmd->set_color_cmyk.m = strtof(args->entries[1].val.start, NULL);
-		cmd->set_color_cmyk.y = strtof(args->entries[2].val.start, NULL);
-		cmd->set_color_cmyk.k = strtof(args->entries[3].val.start, NULL);
 	break;
 	case PS_CMD_SET_FONT:
 		PDF_ERRIF(!(   !args->parent
