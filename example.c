@@ -1,19 +1,30 @@
 #define AMETHYST_IMPLEMENTATION
 #include "amethyst.h"
 
-int obj_draw(struct pdf *pdf, struct pdf_objid id)
+int obj_draw(struct pdf *pdf, struct pdf_objid id,
+             struct pdf_obj_dict *xobjects, unsigned indent)
 {
 	struct pdf_baseobj *contents = pdf_get_baseobj(pdf, id);
+	struct pdf_obj *xobj;
 	struct ps_ctx ctx = {0};
 	struct ps_cmd cmd;
 	PDF_ERRIF(!contents, -1,
 	          "failed to retrive Page Contents base object\n");
 	PDF_ERRIF(!contents->stream, -1, "Page Contents has no stream\n");
 	ps_init(&ctx, contents->stream);
-	PDF_LOG("postscript command stream:\n");
 	while (ps_exec(&ctx, &cmd) == PS_OK) {
-		PDF_LOG("%s", ps_cmd_names[cmd.type]);
+		PDF_LOG("%*s%s", 2*indent, "", ps_cmd_names[cmd.type]);
 		switch (cmd.type) {
+		case PS_CMD_OBJ:
+			PDF_ERRIF(!xobjects, -1, " (%s) no resources\n", cmd.obj.name);
+			xobj = pdf_dict_find(xobjects, cmd.obj.name);
+			PDF_ERRIF(!xobj, -1, " (%s) not found\n", cmd.obj.name);
+			PDF_ERRIF(xobj->type != PDF_OBJ_REF, -1,
+			          " (%s) invalid type\n", cmd.obj.name);
+			PDF_LOG(" (%s)\n", cmd.obj.name);
+			if (obj_draw(pdf, xobj->ref.id, NULL, indent+1))
+				return -1;
+		break;
 		case PS_CMD_RECTANGLE:
 			PDF_LOG(" (%f %f %f %f)\n", cmd.rectangle.x, cmd.rectangle.y,
 			        cmd.rectangle.width, cmd.rectangle.height);
@@ -44,13 +55,13 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id)
 		break;
 		}
 	}
-	PDF_LOG("\n");
 	return 0;
 }
 
 int page_draw(struct pdf *pdf, int page_idx)
 {
-	struct pdf_obj *page, *contents_ref;
+	struct pdf_obj *page, *contents_ref, *resources;
+	struct pdf_obj_dict *xobjects = NULL;
 	int bounds[4];
 
 	page = pdf_get_page(pdf, page_idx);
@@ -61,6 +72,21 @@ int page_draw(struct pdf *pdf, int page_idx)
 	PDF_LOG("bounds: [%d %d %d %d]\n", bounds[0], bounds[1], bounds[2],
 	        bounds[3]);
 
+	resources = pdf_dict_find_deref(pdf, &page->dict, "Resources");
+	if (resources) {
+		PDF_ERRIF(resources->type != PDF_OBJ_DICT, -1,
+		          "Page Resources is not a dict\n");
+		for (size_t i = 0; i < resources->dict.sz; ++i) {
+			if (strcmp(resources->dict.entries[i].name, "XObject") == 0) {
+				struct pdf_obj *xobjs = &resources->dict.entries[i].obj;
+				PDF_ERRIF(xobjs->type != PDF_OBJ_DICT, -1,
+				          "Page Resources XObject is not a dict\n");
+				xobjects = &xobjs->dict;
+				break;
+			}
+		}
+	}
+
 	contents_ref = pdf_dict_find(&page->dict, "Contents");
 	PDF_ERRIF(!contents_ref, -1, "failed to retrieve Page Contents\n");
 	if (contents_ref->type == PDF_OBJ_ARR) {
@@ -68,11 +94,11 @@ int page_draw(struct pdf *pdf, int page_idx)
 			struct pdf_obj *elem = contents_ref->arr.entries+i;
 			PDF_ERRIF(elem->type != PDF_OBJ_REF, -1,
 			          "Page Contents array element is not a valid type\n");
-			if (!PDF_OK(obj_draw(pdf, elem->ref.id)))
+			if (!PDF_OK(obj_draw(pdf, elem->ref.id, xobjects, 0)))
 				PDF_ERR(-1, "Failed to draw page contents array element\n");
 		}
 	} else if (contents_ref->type == PDF_OBJ_REF) {
-		if (!PDF_OK(obj_draw(pdf, contents_ref->ref.id)))
+		if (!PDF_OK(obj_draw(pdf, contents_ref->ref.id, xobjects, 0)))
 			PDF_ERR(-1, "Failed to draw page contents\n");
 	} else
 		PDF_ERR(-1, "Page Contents is not a valid type\n");

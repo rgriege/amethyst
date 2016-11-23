@@ -172,6 +172,7 @@ enum ps_cmd_type
 {
 	PS_CMD_FILL,
 	PS_CMD_MOVE_TEXT,
+	PS_CMD_OBJ,
 	PS_CMD_RECTANGLE,
 	PS_CMD_RESTORE_STATE,
 	PS_CMD_SAVE_STATE,
@@ -187,6 +188,7 @@ struct ps_cmd
 	union
 	{
 		struct { float x, y; }                move_text;
+		struct { const char *name; }          obj;
 		struct { float x, y, width, height; } rectangle;
 		struct { float c, m, y, k; }          set_color_cmyk;
 		struct { const char *font; int sz; }  set_font;
@@ -1127,6 +1129,7 @@ AMFDEF void pdf_free(struct pdf *pdf)
 const char *ps_cmd_names[] = {
 	"Fill",
 	"Move text",
+	"Object",
 	"Rectangle",
 	"Restore state",
 	"Save state",
@@ -1327,6 +1330,9 @@ static int ps__next_base_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd)
 	} else if (ctx->stream - start == 2 && strncmp(start, "cm", 2) == 0) {
 		cmd->type = PS_CMD_TRANSFORM;
 		return PS_OK;
+	} else if (ctx->stream - start == 2 && strncmp(start, "Do", 2) == 0) {
+		cmd->type = PS_CMD_OBJ;
+		return PS_OK;
 	}
 	if (*ctx->stream == '\0')
 		return PS_END;
@@ -1384,6 +1390,14 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		          ps_cmd_names[cmd->type]);
 		cmd->move_text.x = strtof(args->entries[0].val.start, NULL);
 		cmd->move_text.x = strtof(args->entries[1].val.start, NULL);
+	break;
+	case PS_CMD_OBJ:
+		PDF_ERRIF(!(   !args->parent
+		            && args->sz == 1
+		            && args->entries[0].type == PS_ARG_NAME),
+		          PS_ERR, "%s called with incorrect params\n",
+		          ps_cmd_names[cmd->type]);
+		cmd->obj.name = args->entries[0].val.start;
 	break;
 	case PS_CMD_RECTANGLE:
 		PDF_ERRIF(!(   !args->parent
