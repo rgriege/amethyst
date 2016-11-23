@@ -10,9 +10,14 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id)
 	          "failed to retrive Page Contents base object\n");
 	PDF_ERRIF(!contents->stream, -1, "Page Contents has no stream\n");
 	ps_init(&ctx, contents->stream);
+	PDF_LOG("postscript command stream:\n");
 	while (ps_exec(&ctx, &cmd) == PS_OK) {
 		PDF_LOG("%s", ps_cmd_names[cmd.type]);
 		switch (cmd.type) {
+		case PS_CMD_RECTANGLE:
+			PDF_LOG(" (%f %f %f %f)\n", cmd.rectangle.x, cmd.rectangle.y,
+			        cmd.rectangle.width, cmd.rectangle.height);
+		break;
 		case PS_CMD_SHOW_TEXT:
 			PDF_LOG(" (%s)\n", cmd.show_text.str);
 		break;
@@ -27,12 +32,19 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id)
 		case PS_CMD_MOVE_TEXT:
 			PDF_LOG(" (%f, %f)\n", cmd.move_text.x, cmd.move_text.y);
 		break;
+		case PS_CMD_TRANSFORM:
+			PDF_LOG(" (%f %f %f %f %f %f)\n", cmd.transform.a,
+			        cmd.transform.b, cmd.transform.c, cmd.transform.d,
+			        cmd.transform.e, cmd.transform.f);
+		break;
+		case PS_CMD_FILL:
 		case PS_CMD_RESTORE_STATE:
 		case PS_CMD_SAVE_STATE:
 			PDF_LOG("\n");
 		break;
 		}
 	}
+	PDF_LOG("\n");
 	return 0;
 }
 
