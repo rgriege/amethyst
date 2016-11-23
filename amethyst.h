@@ -1252,20 +1252,36 @@ static int ps__parse_args(struct ps_ctx *ctx)
 	struct ps__arg *arg;
 	while (1) {
 		ps__consume_ws(&ctx->stream);
-		if (*ctx->stream == '/') {
+		switch (*ctx->stream) {
+		case '/':
 			arg = ps__arg_arr_grow(args);
 			arg->type = PS_ARG_NAME;
 			++ctx->stream;
 			arg->val.start = ctx->stream;
 			ps__consume_name(&ctx->stream);
 			arg->val.end = ctx->stream;
-		} else if (*ctx->stream >= '0' && *ctx->stream <= '9') {
+		break;
+		case '-':
+		case '+':
+		case '0':
+		case '1':
+		case '2':
+		case '3':
+		case '4':
+		case '5':
+		case '6':
+		case '7':
+		case '8':
+		case '9':
 			arg = ps__arg_arr_grow(args);
 			arg->type = PS_ARG_REAL;
 			arg->val.start = ctx->stream;
+			/* '9' - '-' = 12; '9' - '+' = 14 */
+			ctx->stream += ('9' - *ctx->stream)/10;
 			ps__consume_digits(&ctx->stream);
 			arg->val.end = ctx->stream;
-		} else if (*ctx->stream == '(') {
+		break;
+		case '(':
 			arg = ps__arg_arr_grow(args);
 			arg->type = PS_ARG_STR;
 			arg->val.start = ++ctx->stream;
@@ -1273,7 +1289,8 @@ static int ps__parse_args(struct ps_ctx *ctx)
 				PDF_ERR(PS_ERR, "Unterminated text string\n");
 			arg->val.end = ctx->stream;
 			++ctx->stream;
-		} else if (*ctx->stream == '[') {
+		break;
+		case '[':
 			arg = ps__arg_arr_grow(args);
 			arg->type = PS_ARG_ARR;
 			arg->arr.entries = NULL;
@@ -1281,16 +1298,19 @@ static int ps__parse_args(struct ps_ctx *ctx)
 			arg->arr.parent = args;
 			args = &arg->arr;
 			++ctx->stream;
-		} else if (*ctx->stream == ']') {
+		break;
+		case ']':
 			args = args->parent;
 			PDF_ERRIF(!args, PS_ERR, "Unexpected end of array text token\n");
 			++ctx->stream;
-		} else if (args->parent)
-			PDF_ERR(PS_ERR, "Unterminated array\n")
-		else if (ctx->stream == '\0')
-			return PS_END;
-		else
-			return PS_OK;
+		break;
+		default:
+			if (args->parent)
+				PDF_ERR(PS_ERR, "Unterminated array\n")
+			else
+				return ctx->stream == '\0' ? PS_END : PS_OK;
+		break;
+		}
 	}
 }
 
