@@ -365,12 +365,37 @@ void pdf__reset_buf(struct pdf__ctx *ctx)
 	ctx->ln_sz = 0;
 }
 
-void pdf__consume_word(struct pdf__ctx *ctx)
+static int pdf__is_delim(int c)
+{
+	 return c == '('
+	     || c == ')'
+	     || c == '<'
+	     || c == '>'
+	     || c == '['
+	     || c == ']'
+	     || c == '{'
+	     || c == '}'
+	     || c == '/'
+	     || c == '%';
+}
+
+static void pdf__consume_ws(struct pdf__ctx *ctx)
+{
+	int c;
+	while ((c = fgetc(ctx->fp)) != EOF && isspace(c))
+		;
+	ungetc(c, ctx->fp);
+}
+
+static void pdf__consume_word(struct pdf__ctx *ctx)
 {
 	unsigned len = ctx->ln_sz;
 	int c;
-	while ((c = fgetc(ctx->fp)) != EOF && !isspace(c))
+	while (   (c = fgetc(ctx->fp)) != EOF
+	       && !isspace(c)
+	       && !pdf__is_delim(c))
 		ctx->buf[len++] = c;
+	ungetc(c, ctx->fp);
 	ctx->buf[len] = '\0';
 	ctx->ln_sz = len;
 }
@@ -939,7 +964,7 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 			free(xref_entry->baseobj);
 			PDF_ERR(NULL, "failed to parse base object properties\n");
 		}
-		pdf__readline(pdf->ctx); // consume rest of line
+		pdf__consume_ws(pdf->ctx); // consume rest of line
 		pdf__readline(pdf->ctx);
 		if (strncmp(pdf->ctx->buf, "stream", 6) == 0) {
 			struct pdf_obj *obj = &xref_entry->baseobj->obj, *length, *filter;
@@ -1210,16 +1235,7 @@ static void ps__consume_ws(char **stream)
 static void ps__consume_name(char **stream)
 {
 	while (   !isspace(**stream)
-	       && **stream != '('
-	       && **stream != ')'
-	       && **stream != '<'
-	       && **stream != '>'
-	       && **stream != '['
-	       && **stream != ']'
-	       && **stream != '{'
-	       && **stream != '}'
-	       && **stream != '/'
-	       && **stream != '%'
+	       && !pdf__is_delim(**stream)
 	       && **stream != '\0')
 		++*stream;
 }
