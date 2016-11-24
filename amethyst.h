@@ -212,7 +212,7 @@ struct ps_cmd
 	};
 };
 
-AMFDEF const char *ps_cmd_names[];
+AMFDEF const char *ps_cmd_name(enum ps_cmd_type type);
 
 struct ps__arg;
 struct ps__arg_arr
@@ -1141,26 +1141,31 @@ AMFDEF void pdf_free(struct pdf *pdf)
  * Postscript parser implementation
  */
 
-const char *ps_cmd_names[] = {
-	"Dash",
-	"Fill",
-	"Fill cmyk",
-	"Fill gray",
-	"Line to",
-	"Line width",
-	"Move text",
-	"Move to",
-	"Object",
-	"Rectangle",
-	"Restore state",
-	"Save state",
-	"Set font",
-	"Show text",
-	"Stroke",
-	"Stroke cmyk",
-	"Stroke gray",
-	"Transform",
-};
+AMFDEF const char *ps_cmd_name(enum ps_cmd_type type)
+{
+	switch (type) {
+	case PS_CMD_DASH:          return "Dash";
+	case PS_CMD_FILL:          return "Fill";
+	case PS_CMD_FILL_CMYK:     return "Fill cmyk";
+	case PS_CMD_FILL_GRAY:     return "Fill gray";
+	case PS_CMD_LINE_TO:       return "Line to";
+	case PS_CMD_LINE_WIDTH:    return "Line width";
+	case PS_CMD_MOVE_TEXT:     return "Move text";
+	case PS_CMD_MOVE_TO:       return "Move to";
+	case PS_CMD_OBJ:           return "Object";
+	case PS_CMD_RECTANGLE:     return "Rectangle";
+	case PS_CMD_RESTORE_STATE: return "Restore state";
+	case PS_CMD_SAVE_STATE:    return "Save state";
+	case PS_CMD_SET_FONT:      return "Set font";
+	case PS_CMD_SHOW_TEXT:     return "Show text";
+	case PS_CMD_STROKE:        return "Stroke";
+	case PS_CMD_STROKE_CMYK:   return "Stroke cmyk";
+	case PS_CMD_STROKE_GRAY:   return "Stroke gray";
+	case PS_CMD_TRANSFORM:     return "Transform";
+	}
+	assert(0);
+	return "";
+}
 
 static int ps__next_base_cmd(struct ps_ctx *ctx, struct ps_cmd *cmd);
 
@@ -1455,15 +1460,15 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		            && args->entries[0].type == PS_ARG_ARR
 		            && args->entries[1].type == PS_ARG_REAL),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		PDF_ERRIF(args->entries[0].arr.sz > PS_DASH_SZ, PS_ERR,
 		          "%s array exceeds implementation limit\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		for (size_t i = 0; i < args->entries[0].arr.sz; ++i) {
 			struct ps__arg *arg = args->entries[0].arr.entries+i;
 			PDF_ERRIF(arg->type != PS_ARG_REAL, PS_ERR,
 			          "%s array has non-real value\n",
-			          ps_cmd_names[cmd->type]);
+			          ps_cmd_name(cmd->type));
 			cmd->dash.arr[i] = atoi(arg->val.start);
 		}
 		if (args->entries[0].arr.sz < PS_DASH_SZ)
@@ -1478,7 +1483,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		            && args->entries[2].type == PS_ARG_REAL
 		            && args->entries[3].type == PS_ARG_REAL),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		cmd->cmyk.c = strtof(args->entries[0].val.start, NULL);
 		cmd->cmyk.m = strtof(args->entries[1].val.start, NULL);
 		cmd->cmyk.y = strtof(args->entries[2].val.start, NULL);
@@ -1489,7 +1494,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		PDF_ERRIF(!(   args->sz == 1
 		            && args->entries[0].type == PS_ARG_REAL),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		cmd->gray.val = strtof(args->entries[0].val.start, NULL);
 	break;
 	case PS_CMD_LINE_TO:
@@ -1498,7 +1503,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		            && args->entries[0].type == PS_ARG_REAL
 		            && args->entries[1].type == PS_ARG_REAL),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		cmd->pos.x = strtof(args->entries[0].val.start, NULL);
 		cmd->pos.y = strtof(args->entries[1].val.start, NULL);
 	break;
@@ -1506,7 +1511,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		PDF_ERRIF(!(   args->sz == 1
 		            && args->entries[0].type == PS_ARG_REAL),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		cmd->line_width.val = strtof(args->entries[0].val.start, NULL);
 	break;
 	case PS_CMD_MOVE_TEXT:
@@ -1514,7 +1519,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		            && args->entries[0].type == PS_ARG_REAL
 		            && args->entries[1].type == PS_ARG_REAL),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		cmd->pos.x = strtof(args->entries[0].val.start, NULL);
 		cmd->pos.y = strtof(args->entries[1].val.start, NULL);
 	break;
@@ -1522,7 +1527,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		PDF_ERRIF(!(   args->sz == 1
 		            && args->entries[0].type == PS_ARG_NAME),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		cmd->obj.name = args->entries[0].val.start;
 	break;
 	case PS_CMD_RECTANGLE:
@@ -1532,7 +1537,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		            && args->entries[2].type == PS_ARG_REAL
 		            && args->entries[3].type == PS_ARG_REAL),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		cmd->rectangle.x = strtof(args->entries[0].val.start, NULL);
 		cmd->rectangle.y = strtof(args->entries[1].val.start, NULL);
 		cmd->rectangle.width = strtof(args->entries[2].val.start, NULL);
@@ -1543,7 +1548,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		            && args->entries[0].type == PS_ARG_NAME
 		            && args->entries[1].type == PS_ARG_REAL),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		cmd->set_font.font = args->entries[0].val.start;
 		cmd->set_font.sz = atoi(args->entries[1].val.start);
 	break;
@@ -1551,7 +1556,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		PDF_ERRIF(!(   args->sz == 1
 		            && args->entries[0].type == PS_ARG_STR),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		cmd->show_text.str = args->entries[0].val.start;
 	break;
 	case PS_CMD_TRANSFORM:
@@ -1563,7 +1568,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 		            && args->entries[4].type == PS_ARG_REAL
 		            && args->entries[5].type == PS_ARG_REAL),
 		          PS_ERR, "%s called with incorrect params\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 		cmd->transform.a = strtof(args->entries[0].val.start, NULL);
 		cmd->transform.b = strtof(args->entries[1].val.start, NULL);
 		cmd->transform.c = strtof(args->entries[2].val.start, NULL);
@@ -1577,7 +1582,7 @@ static int ps__assign_cmd_args(struct ps__arg_arr *args,
 	case PS_CMD_STROKE:
 		PDF_ERRIF(!(args->sz == 0),
 		          PS_ERR, "%s called with params when none expected\n",
-		          ps_cmd_names[cmd->type]);
+		          ps_cmd_name(cmd->type));
 	break;
 	}
 	return PS_OK;

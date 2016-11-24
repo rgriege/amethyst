@@ -13,7 +13,7 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id,
 	PDF_ERRIF(!contents->stream, -1, "Page Contents has no stream\n");
 	ps_init(&ctx, contents->stream);
 	while (ps_exec(&ctx, &cmd) == PS_OK) {
-		PDF_LOG("%*s%s", 2*indent, "", ps_cmd_names[cmd.type]);
+		PDF_LOG("%*s%s", 2*indent, "", ps_cmd_name(cmd.type));
 		switch (cmd.type) {
 		case PS_CMD_DASH:
 			PDF_LOG(" ([");
