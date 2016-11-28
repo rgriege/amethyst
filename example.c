@@ -11,6 +11,15 @@ int obj_draw(struct pdf *pdf, struct pdf_objid id,
 	PDF_ERRIF(!contents, -1,
 	          "failed to retrive Page Contents base object\n");
 	PDF_ERRIF(!contents->stream, -1, "Page Contents has no stream\n");
+	switch (contents->stream_type) {
+	case PDF_STREAM_JPEG:
+		PDF_LOG("%*s<<jpeg>>\n", 2*indent, "");
+		return 0;
+	case PDF_STREAM_UNKNOWN:
+		PDF_ERR(-1, "unknown stream type\n");
+	case PDF_STREAM_CMD:
+	break;
+	}
 	ps_init(&ctx, contents->stream);
 	while (ps_exec(&ctx, &cmd) == PS_OK) {
 		PDF_LOG("%*s%s", 2*indent, "", ps_cmd_name(cmd.type));

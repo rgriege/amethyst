@@ -154,9 +154,17 @@ struct pdf_obj
 	};
 };
 
+enum pdf_stream_type
+{
+	PDF_STREAM_CMD,
+	PDF_STREAM_JPEG,
+	PDF_STREAM_UNKNOWN,
+};
+
 struct pdf_baseobj
 {
 	struct pdf_obj obj;
+	enum pdf_stream_type stream_type;
 	char *stream;
 };
 
@@ -278,6 +286,10 @@ AMFDEF int ps_exec(struct ps_ctx *ctx, struct ps_cmd *cmd);
 #include <string.h>
 #ifdef PDF_ZLIB
 #include <zlib.h>
+#endif
+#ifdef PDF_JPEG
+#include <jpeglib.h>
+#include <setjmp.h>
 #endif
 
 #define PDF_ERR(code, ...) { PDF_LOG(__VA_ARGS__); return code; }
@@ -944,18 +956,83 @@ static int pdf__zlib_inflate(char **stream, int len)
 }
 #endif
 
-static int pdf__decode_stream(char **stream, int len, const char *decoder)
+#ifdef PDF_JPEG
+struct pdf__jpeg_error_mgr {
+	struct jpeg_error_mgr pub;
+	jmp_buf setjmp_buffer;
+};
+
+static void pdf__jpeg_error_exit(j_common_ptr cinfo)
 {
-#ifdef PDF_ZLIB
+	struct pdf__jpeg_error_mgr *err =
+		(struct pdf__jpeg_error_mgr*)cinfo->err;
+	(*cinfo->err->output_message)(cinfo);
+	longjmp(err->setjmp_buffer, 1);
+}
+
+static int pdf__jpeg_decode(char **stream, int len)
+{
+	struct jpeg_decompress_struct cinfo;
+	struct pdf__jpeg_error_mgr err_mgr;
+	unsigned char *buffer, *row, *rows[1];
+	int row_stride;
+
+	cinfo.err = jpeg_std_error(&err_mgr.pub);
+	err_mgr.pub.error_exit = pdf__jpeg_error_exit;
+	if (setjmp(err_mgr.setjmp_buffer)) {
+		jpeg_destroy_decompress(&cinfo);
+		PDF_ERR(1, "Failed to setup jpeg decode error handling");
+	}
+
+	jpeg_create_decompress(&cinfo);
+	jpeg_mem_src(&cinfo, (unsigned char*)*stream, len);
+
+	jpeg_read_header(&cinfo, TRUE);
+	jpeg_start_decompress(&cinfo);
+
+	row_stride = cinfo.output_width * cinfo.output_components;
+	buffer = PDF_MALLOC(cinfo.output_height * row_stride);
+	row = buffer;
+	while (cinfo.output_scanline < cinfo.output_height) {
+		rows[0] = row;
+		jpeg_read_scanlines(&cinfo, rows, 1);
+		row += row_stride;
+	}
+
+	jpeg_finish_decompress(&cinfo);
+	jpeg_destroy_decompress(&cinfo);
+
+	PDF_FREE(*stream);
+	*stream = (char*)buffer;
+
+	return 0;
+}
+#endif
+
+static int pdf__decode_stream(enum pdf_stream_type *type, char **stream,
+                              int len, const char *decoder)
+{
+	int ret = 1;
 	if (strcmp(decoder, "FlateDecode") == 0) {
-		int ret = pdf__zlib_inflate(stream, len);
+		*type = PDF_STREAM_CMD;
+#ifdef PDF_ZLIB
+		ret = pdf__zlib_inflate(stream, len);
 		if (ret != Z_OK)
 			PDF_LOG("zlib error (%d)\n", ret);
 		return ret;
-	}
 #endif
+	}
+	if (strcmp(decoder, "DCTDecode") == 0) {
+		*type = PDF_STREAM_JPEG;
+#ifdef PDF_JPEG
+		ret = pdf__jpeg_decode(stream, len);
+		if (ret != Z_OK)
+			PDF_LOG("jpeg error (%d)\n", ret);
+		return ret;
+#endif
+	}
 	PDF_LOG("Filter '%s' not supported\n", decoder);
-	return 1;
+	return ret;
 }
 
 AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
@@ -1003,6 +1080,7 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 			PDF_ERRIF(length->type != PDF_OBJ_INT, NULL,
 			          "base object Length is not an int\n");
 			xref_entry->baseobj->stream = PDF_MALLOC(length->intg.val+1);
+			xref_entry->baseobj->stream_type = PDF_STREAM_UNKNOWN;
 			/* pdf_dict_find_deref can move the stream position */
 			PDF_ERRIF(fsetpos(pdf->ctx->fp, &pos), NULL,
 			          "failed to restore file pos when parsing stream\n");
@@ -1014,19 +1092,23 @@ AMFDEF struct pdf_baseobj *pdf_get_baseobj(struct pdf *pdf, struct pdf_objid id)
 			if (filter) {
 				PDF_ERRIF(filter->type != PDF_OBJ_NAME, NULL,
 				          "stream filter is not a name\n");
-				if (pdf__decode_stream(&xref_entry->baseobj->stream,
+				if (pdf__decode_stream(&xref_entry->baseobj->stream_type,
+				                       &xref_entry->baseobj->stream,
 				                       length->intg.val, filter->name.val))
 					PDF_ERR(NULL, "Failed to decode stream\n");
 			}
+			else
+				xref_entry->baseobj->stream_type = PDF_STREAM_CMD;
 
 			pdf__readline(pdf->ctx); // consume rest of line
 			pdf__readline(pdf->ctx);
 			PDF_ERRIF(strncmp(pdf->ctx->buf, "endstream", 9), NULL,
 			          "missing endstream token (%s)\n", pdf->ctx->buf);
 			pdf__readline(pdf->ctx);
-		}
-		else
+		} else {
 			xref_entry->baseobj->stream = NULL;
+			xref_entry->baseobj->stream_type = PDF_STREAM_UNKNOWN;
+		}
 		PDF_ERRIF(strncmp(pdf->ctx->buf, "endobj", 6), NULL,
 		          "missing endobj token\n");
 	}
